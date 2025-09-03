@@ -1,2 +1,3 @@
-# chip8-wasm
-A CHIP-8 interpreter that runs in the browser using WebAssembly
+# CHIP-8 Interpreter
+
+Following https://tobiasvl.github.io/blog/write-a-chip-8-emulator/.

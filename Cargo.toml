@@ -1,0 +1,3 @@
+[workspace]
+members = ["chip8-core", "chip8-native"]
+resolver = "2"
