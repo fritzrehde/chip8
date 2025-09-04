@@ -1,10 +1,12 @@
+use std::path::Path;
+
 // 12-bit pointer addressing memory.
 type Address = u16;
 
 const FRAME_WIDTH: u8 = 64;
 const FRAME_HEIGHT: u8 = 32;
 
-struct Cpu {
+pub struct Cpu {
     /// Program counter, points to current instruction in memory.
     pc: Address,
 
@@ -27,24 +29,32 @@ struct Cpu {
     /// 16 8-bit general-purpose "variable" registers.
     variable_registers: [u8; 16],
 
-    /// While value is above 0, the delay timer should be decremented by one
-    /// 60 times per second (ie. at 60 Hz). Also known as "DT".
+    /// While value is above 0, the delay timer should be decremented by one on
+    /// every tick (e.g. at 60 Hz tick-rate). Also known as "DT".
     delay_timer: Timer,
 
-    /// While value is above 0, the sound timer should be decremented by one
-    /// 60 times per second (ie. at 60 Hz), and should "beep" audibly while
+    /// While value is above 0, the sound timer should be decremented by one on
+    /// every tick (e.g. at 60 Hz tick-rate), and should "beep" audibly while
     /// above 0. Also known as "ST".
     sound_timer: Timer,
 }
 
 // TOOD: think about wrapping adds
 
-struct Rom {
-    raw: Vec<u8>,
+#[derive(Debug)]
+pub struct Rom {
+    bytes: Vec<u8>,
+}
+
+impl Rom {
+    pub fn read_from_file(rom_file_path: impl AsRef<Path>) -> std::io::Result<Self> {
+        let bytes = std::fs::read(rom_file_path)?;
+        Ok(Self { bytes })
+    }
 }
 
 impl Cpu {
-    fn new() -> Self {
+    pub fn new() -> Self {
         let mut s = Self {
             pc: 0x000,
             sp: 0x000,
@@ -67,15 +77,14 @@ impl Cpu {
             .copy_from_slice(&FONTSET);
     }
 
-    fn load_rom(&mut self, rom: &Rom) {
-        self.memory[usize::from(PROGRAM_ADDR)..(usize::from(PROGRAM_ADDR) + rom.raw.len())]
-            .copy_from_slice(&rom.raw);
+    pub fn load_rom(&mut self, rom: &Rom) {
+        self.memory[usize::from(PROGRAM_ADDR)..(usize::from(PROGRAM_ADDR) + rom.bytes.len())]
+            .copy_from_slice(&rom.bytes);
         self.pc = PROGRAM_ADDR;
     }
 
-    // TODO: should be called at approx 700 instructions per sec.
     /// Fetch, decode and execute one instruction.
-    fn step(&mut self) {
+    pub fn step(&mut self) {
         let inst = self.fetch_next_inst();
         // PC indexes into byte array, but each instruction is 2 bytes wide.
         self.pc += 2;
@@ -83,8 +92,8 @@ impl Cpu {
         self.exec_inst(inst);
     }
 
-    /// A callback that will be called at a 60hz rate.
-    fn tick_60hz(&mut self) {
+    /// A callback that will be called at the tick rate.
+    pub fn tick(&mut self) {
         self.delay_timer.tick();
         if self.sound_timer.tick() == TimerTickResult::Ticked {
             // TODO: play sound
@@ -181,7 +190,7 @@ enum Bit {
 }
 
 fn bits_msb_to_lsb(byte: u8) -> impl Iterator<Item = Bit> {
-    (0u8..8).map(move |i| match (byte & (1 << i)) >> i {
+    (0u8..8).rev().map(move |i| match (byte & (1 << i)) >> i {
         0 => Bit::Zero,
         1 => Bit::One,
         _ => unreachable!(),
