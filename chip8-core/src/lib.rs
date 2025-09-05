@@ -3,8 +3,8 @@ use std::path::Path;
 // 12-bit pointer addressing memory.
 type Address = u16;
 
-const FRAME_WIDTH: u8 = 64;
-const FRAME_HEIGHT: u8 = 32;
+pub const FRAME_WIDTH: u8 = 64;
+pub const FRAME_HEIGHT: u8 = 32;
 
 pub struct Cpu {
     /// Program counter, points to current instruction in memory.
@@ -21,7 +21,7 @@ pub struct Cpu {
     memory: [u8; 4096],
 
     /// The pixels that are displayed on the screen.
-    framebuffer: [Pixel; (FRAME_WIDTH as usize) * (FRAME_HEIGHT as usize)],
+    framebuffer: Framebuffer,
 
     /// 12-bit "index"/"I" register, used to point at locations in memory.
     index_register: Address,
@@ -41,18 +41,6 @@ pub struct Cpu {
 
 // TOOD: think about wrapping adds
 
-#[derive(Debug)]
-pub struct Rom {
-    bytes: Vec<u8>,
-}
-
-impl Rom {
-    pub fn read_from_file(rom_file_path: impl AsRef<Path>) -> std::io::Result<Self> {
-        let bytes = std::fs::read(rom_file_path)?;
-        Ok(Self { bytes })
-    }
-}
-
 impl Cpu {
     pub fn new() -> Self {
         let mut s = Self {
@@ -61,7 +49,7 @@ impl Cpu {
             // TODO: maybe start with 16 byte capacity, which is standard usage.
             stack: Vec::new(),
             memory: [0x0; 4096],
-            framebuffer: [Pixel::Empty; (FRAME_WIDTH as usize) * (FRAME_HEIGHT as usize)],
+            framebuffer: Default::default(),
             index_register: 0x000,
             variable_registers: [0x0; 16],
             delay_timer: Timer::new(),
@@ -162,11 +150,16 @@ impl Cpu {
                 .enumerate()
         {
             let sprite_row = self.memory[usize::from(sprite.bits_ptr) + i];
-            for (offset_from_left_col, bit) in bits_msb_to_lsb(sprite_row).enumerate() {
-                let x = left_col_x
-                    + u8::try_from(offset_from_left_col).expect("a byte contains exactly 8 bits");
-                let pixel_idx = get_pixel_idx(x, y);
-
+            for (pixel_idx, _x, bit) in
+                bits_msb_to_lsb(sprite_row)
+                    .enumerate()
+                    .filter_map(|(offset_from_left_col, bit)| {
+                        let x = left_col_x
+                            + u8::try_from(offset_from_left_col)
+                                .expect("a byte contains exactly 8 bits");
+                        get_pixel_idx(x, y).map(|pixel_idx| (pixel_idx, x, bit))
+                    })
+            {
                 let prev_pixel = self.framebuffer[pixel_idx];
                 let new_pixel = match bit {
                     Bit::One => prev_pixel.flipped(),
@@ -182,8 +175,80 @@ impl Cpu {
 
         self.variable_registers[0xF] = if any_pixel_turned_off { 0x1 } else { 0x0 };
     }
+
+    pub fn framebuffer(&self) -> &Framebuffer {
+        &self.framebuffer
+    }
 }
 
+#[derive(Debug)]
+pub struct Rom {
+    bytes: Vec<u8>,
+}
+
+impl Rom {
+    pub fn read_from_file(rom_file_path: impl AsRef<Path>) -> std::io::Result<Self> {
+        let bytes = std::fs::read(rom_file_path)?;
+        Ok(Self { bytes })
+    }
+}
+
+pub struct Framebuffer {
+    pixels: [Pixel; (FRAME_WIDTH as usize) * (FRAME_HEIGHT as usize)],
+}
+
+impl Default for Framebuffer {
+    fn default() -> Self {
+        Self {
+            pixels: [Pixel::Empty; (FRAME_WIDTH as usize) * (FRAME_HEIGHT as usize)],
+        }
+    }
+}
+
+impl Framebuffer {
+    fn fill(&mut self, pixel: Pixel) {
+        self.pixels.fill(pixel);
+    }
+}
+
+impl std::fmt::Debug for Framebuffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for y in 0..FRAME_HEIGHT {
+            for x in 0..FRAME_WIDTH {
+                write!(
+                    f,
+                    "{}",
+                    self.pixels[get_pixel_idx(x, y).expect("x and y are in range")]
+                )?;
+            }
+            writeln!(f)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::ops::Index<usize> for Framebuffer {
+    type Output = Pixel;
+
+    fn index(&self, idx: usize) -> &Self::Output {
+        &self.pixels[idx]
+    }
+}
+
+impl std::ops::IndexMut<usize> for Framebuffer {
+    fn index_mut(&mut self, idx: usize) -> &mut Self::Output {
+        &mut self.pixels[idx]
+    }
+}
+
+impl std::ops::Deref for Framebuffer {
+    type Target = [Pixel];
+    fn deref(&self) -> &Self::Target {
+        &self.pixels
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
 enum Bit {
     Zero,
     One,
@@ -198,19 +263,20 @@ fn bits_msb_to_lsb(byte: u8) -> impl Iterator<Item = Bit> {
 }
 
 enum Direction {
-    North,
-    East,
+    _North,
+    _East,
     South,
-    West,
+    _West,
 }
 
 impl Direction {
     fn xy_diff(&self) -> (i8, i8) {
+        // Origin (0,0) is top left.
         match self {
-            Direction::North => (0, 1),
-            Direction::East => (1, 0),
-            Direction::South => (0, -1),
-            Direction::West => (-1, 0),
+            Direction::_North => (0, -1),
+            Direction::_East => (1, 0),
+            Direction::South => (0, 1),
+            Direction::_West => (-1, 0),
         }
     }
 }
@@ -251,7 +317,7 @@ struct Sprite {
     /// y-coordinate of top left of the sprite.
     top_left_y: u8,
     /// Height of the sprite. The width of a sprite is always represented by
-    /// 1 byte, so is made up of 8 bits.
+    /// 1 byte, so is made up of 8 bits/pixels.
     height: u8,
     /// Pointer to the memory location storing the bits of the sprite in row-wise order.
     bits_ptr: Address,
@@ -263,7 +329,6 @@ impl Sprite {
             top_left_x: top_left_x % FRAME_WIDTH,
             top_left_y: top_left_y % FRAME_HEIGHT,
             height,
-            // A sprite's width
             bits_ptr,
         }
     }
@@ -294,8 +359,8 @@ const FONT_ADDR: Address = 0x050;
 // reasons (the first interpreters were located in RAM from 0x000 to 0x1FF).
 const PROGRAM_ADDR: Address = 0x200;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-enum Pixel {
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum Pixel {
     Filled,
     Empty,
 }
@@ -309,8 +374,23 @@ impl Pixel {
     }
 }
 
-fn get_pixel_idx(x_coord: u8, y_coord: u8) -> usize {
-    (usize::from(x_coord) * usize::from(FRAME_WIDTH)) + usize::from(y_coord)
+impl std::fmt::Display for Pixel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let bit = match self {
+            Pixel::Filled => 1,
+            Pixel::Empty => 0,
+        };
+        write!(f, "{}", bit)?;
+        Ok(())
+    }
+}
+
+fn get_pixel_idx(x_coord: u8, y_coord: u8) -> Option<usize> {
+    let in_bounds = x_coord < FRAME_WIDTH && y_coord < FRAME_HEIGHT;
+    if !in_bounds {
+        return None;
+    }
+    Some((usize::from(y_coord) * usize::from(FRAME_WIDTH)) + usize::from(x_coord))
 }
 
 struct Timer {
