@@ -116,6 +116,7 @@ impl App {
         let Some(graphics) = &mut self.graphics else {
             return;
         };
+        // TODO: converting Pixels to u32 hex codes on every render is inefficient, think about maintaining duplicate u32 hex state alongside Pixel array
         for (rendered_pixel, pixel) in zip(self.render.iter_mut(), self.cpu.framebuffer().iter()) {
             *rendered_pixel = match pixel {
                 Pixel::Filled => self.colour_palette.foreground_colour,

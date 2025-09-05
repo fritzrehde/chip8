@@ -112,16 +112,32 @@ impl Cpu {
         match (f, x, y, n) {
             (0x0, 0x0, 0xE, 0x0) => Instruction::ClearScreen,
             (0x1, _, _, _) => Instruction::JumpTo { address: nnn },
-            (0x6, _, _, _) => Instruction::SetVariableRegister {
+            (0x6, _, _, _) => Instruction::SetVariableRegisterToValue {
                 register_id: x,
                 value: nn,
             },
-            (0x7, _, _, _) => Instruction::AddToVariableRegister {
+            (0x7, _, _, _) => Instruction::AddValueToVariableRegister {
                 register_id: x,
                 value: nn,
             },
             (0xA, _, _, _) => Instruction::SetIndexRegister { value: nnn },
             (0xD, _, _, _) => Instruction::Draw(Sprite::new(vx, vy, n, self.index_register)),
+            (0x8, _, _, 0x0) => Instruction::SetVxToVy {
+                x_register_id: x,
+                y_register_id: y,
+            },
+            (0x8, _, _, 0x1) => Instruction::BinaryOrVxVy {
+                x_register_id: x,
+                y_register_id: y,
+            },
+            (0x8, _, _, 0x2) => Instruction::BinaryAndVxVy {
+                x_register_id: x,
+                y_register_id: y,
+            },
+            (0x8, _, _, 0x3) => Instruction::LogicalXorVxVy {
+                x_register_id: x,
+                y_register_id: y,
+            },
             _ => todo!(),
         }
     }
@@ -130,14 +146,42 @@ impl Cpu {
         match inst {
             Instruction::ClearScreen => self.framebuffer.fill(Pixel::Empty),
             Instruction::JumpTo { address } => self.pc = address,
-            Instruction::SetVariableRegister { register_id, value } => {
+            Instruction::SetVariableRegisterToValue { register_id, value } => {
                 self.variable_registers[usize::from(register_id)] = value;
             }
-            Instruction::AddToVariableRegister { register_id, value } => {
+            Instruction::AddValueToVariableRegister { register_id, value } => {
                 self.variable_registers[usize::from(register_id)] += value;
             }
             Instruction::SetIndexRegister { value } => self.index_register = value,
             Instruction::Draw(sprite) => self.draw_sprite(sprite),
+            Instruction::SetVxToVy {
+                x_register_id,
+                y_register_id,
+            } => {
+                self.variable_registers[usize::from(x_register_id)] =
+                    self.variable_registers[usize::from(y_register_id)]
+            }
+            Instruction::BinaryOrVxVy {
+                x_register_id,
+                y_register_id,
+            } => {
+                self.variable_registers[usize::from(x_register_id)] |=
+                    self.variable_registers[usize::from(y_register_id)]
+            }
+            Instruction::BinaryAndVxVy {
+                x_register_id,
+                y_register_id,
+            } => {
+                self.variable_registers[usize::from(x_register_id)] &=
+                    self.variable_registers[usize::from(y_register_id)]
+            }
+            Instruction::LogicalXorVxVy {
+                x_register_id,
+                y_register_id,
+            } => {
+                self.variable_registers[usize::from(x_register_id)] ^=
+                    self.variable_registers[usize::from(y_register_id)]
+            }
         }
     }
 
@@ -302,11 +346,37 @@ fn steps_in_dir(x_start: u8, y_start: u8, dir: Direction) -> impl Iterator<Item 
 
 enum Instruction {
     ClearScreen,
-    JumpTo { address: Address },
-    SetVariableRegister { register_id: u8, value: u8 },
-    AddToVariableRegister { register_id: u8, value: u8 },
-    SetIndexRegister { value: Address },
+    JumpTo {
+        address: Address,
+    },
+    SetVariableRegisterToValue {
+        register_id: u8,
+        value: u8,
+    },
+    AddValueToVariableRegister {
+        register_id: u8,
+        value: u8,
+    },
+    SetIndexRegister {
+        value: Address,
+    },
     Draw(Sprite),
+    SetVxToVy {
+        x_register_id: u8,
+        y_register_id: u8,
+    },
+    BinaryOrVxVy {
+        x_register_id: u8,
+        y_register_id: u8,
+    },
+    BinaryAndVxVy {
+        x_register_id: u8,
+        y_register_id: u8,
+    },
+    LogicalXorVxVy {
+        x_register_id: u8,
+        y_register_id: u8,
+    },
 }
 
 /// A sprite is a square bitmap image, made up of pixels.
