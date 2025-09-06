@@ -4,6 +4,7 @@ use rand::{Rng, rngs::ThreadRng};
 
 // 12-bit pointer addressing memory.
 type Address = u16;
+type RegisterId = u8;
 
 pub const FRAME_WIDTH: u8 = 64;
 pub const FRAME_HEIGHT: u8 = 32;
@@ -88,7 +89,7 @@ impl Cpu {
     /// Fetch, decode and execute one instruction.
     pub fn step(&mut self) {
         let inst = self.fetch_next_inst();
-        // PC indexes into byte array, but each instruction is 2 bytes wide.
+        // PC indexes into byte array, and each instruction is 2 bytes wide.
         self.pc += 2;
         // Increment PC first to avoid skipping jumped-to instruction.
         self.exec_inst(inst);
@@ -195,11 +196,11 @@ enum Instruction {
         address: Address,
     },
     SetVariableRegisterToValue {
-        register_id: u8,
+        register_id: RegisterId,
         value: u8,
     },
     AddValueToVariableRegister {
-        register_id: u8,
+        register_id: RegisterId,
         value: u8,
     },
     SetIndexRegister {
@@ -210,57 +211,57 @@ enum Instruction {
     },
     Draw(Sprite),
     SetVxToVy {
-        x_register_id: u8,
-        y_register_id: u8,
+        x_register_id: RegisterId,
+        y_register_id: RegisterId,
     },
     BinaryOrVxVy {
-        x_register_id: u8,
-        y_register_id: u8,
+        x_register_id: RegisterId,
+        y_register_id: RegisterId,
     },
     BinaryAndVxVy {
-        x_register_id: u8,
-        y_register_id: u8,
+        x_register_id: RegisterId,
+        y_register_id: RegisterId,
     },
     LogicalXorVxVy {
-        x_register_id: u8,
-        y_register_id: u8,
+        x_register_id: RegisterId,
+        y_register_id: RegisterId,
     },
     AddVyToVx {
-        x_register_id: u8,
-        y_register_id: u8,
+        x_register_id: RegisterId,
+        y_register_id: RegisterId,
     },
     SubtractVyfromVx {
-        x_register_id: u8,
-        y_register_id: u8,
+        x_register_id: RegisterId,
+        y_register_id: RegisterId,
     },
     SubtractVxfromVy {
-        x_register_id: u8,
-        y_register_id: u8,
+        x_register_id: RegisterId,
+        y_register_id: RegisterId,
     },
     ShiftLeft {
-        x_register_id: u8,
-        _y_register_id: u8,
+        x_register_id: RegisterId,
+        _y_register_id: RegisterId,
     },
     ShiftRight {
-        x_register_id: u8,
-        _y_register_id: u8,
+        x_register_id: RegisterId,
+        _y_register_id: RegisterId,
     },
     JumpWithOffset {
         address: Address,
         offset: u16,
     },
     Random {
-        dst_register_id: u8,
+        dst_register_id: RegisterId,
         bin_and_with_value: u8,
     },
     SetVxToDelayTimer {
-        x_register_id: u8,
+        x_register_id: RegisterId,
     },
     SetDelayTimerToVx {
-        x_register_id: u8,
+        x_register_id: RegisterId,
     },
     SetSoundTimerToVx {
-        x_register_id: u8,
+        x_register_id: RegisterId,
     },
     SetIndexRegisterToFontAddress {
         font_char: u8,
@@ -269,10 +270,10 @@ enum Instruction {
         number: u8,
     },
     StoreRegistersToMemory {
-        upto_register_id: u8,
+        upto_register_id: RegisterId,
     },
     LoadRegistersFromMemory {
-        upto_register_id: u8,
+        upto_register_id: RegisterId,
     },
     CallSubroutine {
         subroutine_address: Address,
@@ -298,7 +299,7 @@ enum Instruction {
 #[derive(Debug, Copy, Clone)]
 pub struct WaitForInputKeyPress {
     /// Once any key is pressed, save the pressed key in this register.
-    next_pressed_key_dst_register_id: u8,
+    next_pressed_key_dst_register_id: RegisterId,
 }
 
 impl WaitForInputKeyPress {
