@@ -1,4 +1,4 @@
-use std::{ops::Shl, path::Path};
+use std::path::Path;
 
 use rand::{Rng, rngs::ThreadRng};
 
@@ -11,9 +11,6 @@ pub const FRAME_HEIGHT: u8 = 32;
 pub struct Cpu {
     /// Program counter, points to current instruction in memory.
     pc: Address,
-
-    /// Stack pointer (assume stack will not grow beyond size of memory).
-    sp: Address,
 
     /// Growable stack of 12-bit values.
     stack: Vec<u16>,
@@ -40,6 +37,7 @@ pub struct Cpu {
     /// above 0. Also known as "ST".
     sound_timer: Timer,
 
+    /// Random number generator.
     rng: ThreadRng,
 }
 
@@ -49,7 +47,6 @@ impl Cpu {
     pub fn new() -> Self {
         let mut s = Self {
             pc: 0x000,
-            sp: 0x000,
             // TODO: maybe start with 16 byte capacity, which is standard usage.
             stack: Vec::new(),
             memory: [0x0; 4096],
@@ -206,6 +203,30 @@ enum Instruction {
     SetSoundTimerToVx {
         x_register_id: u8,
     },
+    SetIndexRegisterToFontAddress {
+        font_char: u8,
+    },
+    SaveNumberAsDecimalDigits {
+        number: u8,
+    },
+    StoreRegistersToMemory {
+        upto_register_id: u8,
+    },
+    LoadRegistersFromMemory {
+        upto_register_id: u8,
+    },
+    CallSubroutine {
+        subroutine_address: Address,
+    },
+    ReturnFromSubroutine,
+    SkipInstructionIfValueEqual {
+        value_a: u8,
+        value_b: u8,
+    },
+    SkipInstructionIfValuesNotEqual {
+        value_a: u8,
+        value_b: u8,
+    },
 }
 
 impl Cpu {
@@ -293,6 +314,36 @@ impl Cpu {
             (0xF, _, 0x1, 0xE) => Instruction::AddValueToIndexRegister {
                 value: u16::from(vx),
             },
+            (0xF, _, 0x2, 0x9) => Instruction::SetIndexRegisterToFontAddress {
+                font_char: vx & 0xF,
+            },
+            (0xF, _, 0x3, 0x3) => Instruction::SaveNumberAsDecimalDigits { number: vx },
+            (0xF, _, 0x5, 0x5) => Instruction::StoreRegistersToMemory {
+                upto_register_id: x,
+            },
+            (0xF, _, 0x6, 0x5) => Instruction::LoadRegistersFromMemory {
+                upto_register_id: x,
+            },
+            (0x2, _, _, _) => Instruction::CallSubroutine {
+                subroutine_address: nnn,
+            },
+            (0x0, 0x0, 0xE, 0xE) => Instruction::ReturnFromSubroutine,
+            (0x3, _, _, _) => Instruction::SkipInstructionIfValueEqual {
+                value_a: vx,
+                value_b: nn,
+            },
+            (0x4, _, _, _) => Instruction::SkipInstructionIfValuesNotEqual {
+                value_a: vx,
+                value_b: nn,
+            },
+            (0x5, _, _, 0x0) => Instruction::SkipInstructionIfValueEqual {
+                value_a: vx,
+                value_b: vy,
+            },
+            (0x9, _, _, 0x0) => Instruction::SkipInstructionIfValuesNotEqual {
+                value_a: vx,
+                value_b: vy,
+            },
             _ => todo!(),
         }
     }
@@ -305,7 +356,8 @@ impl Cpu {
                 self.variable_registers[usize::from(register_id)] = value;
             }
             Instruction::AddValueToVariableRegister { register_id, value } => {
-                self.variable_registers[usize::from(register_id)] += value;
+                self.variable_registers[usize::from(register_id)] =
+                    self.variable_registers[usize::from(register_id)].wrapping_add(value);
             }
             Instruction::SetIndexRegister { value } => self.index_register = value,
             Instruction::Draw(sprite) => self.draw_sprite(sprite),
@@ -397,8 +449,7 @@ impl Cpu {
                 self.variable_registers[0xF] = shifted_out_bit;
             }
             Instruction::JumpWithOffset { address, offset } => {
-                // TODO: handle overflow?
-                self.pc = address + offset;
+                self.pc = address.wrapping_add(offset)
             }
             Instruction::Random {
                 dst_register_id,
@@ -420,7 +471,58 @@ impl Cpu {
                 self.sound_timer.set_value(vx);
             }
             Instruction::AddValueToIndexRegister { value } => {
-                self.index_register += value;
+                self.index_register = self.index_register.wrapping_add(value);
+            }
+            Instruction::SetIndexRegisterToFontAddress { font_char } => {
+                self.index_register = get_font_addr(font_char);
+            }
+            Instruction::SaveNumberAsDecimalDigits { number } => {
+                // Number is between 0 and 255
+                // Dividing by 10 in decimal is equivalent to shifting one to the right in binary.
+                // Modulo 10 in decimal is equivalent to masking out lowest digit.
+                let digit1 = number / 100;
+                let digit2 = (number / 10) % 10;
+                let digit3 = number % 10;
+                self.memory[usize::from(self.index_register)] = digit1;
+                self.memory[usize::from(self.index_register) + 1] = digit2;
+                self.memory[usize::from(self.index_register) + 2] = digit3;
+            }
+            Instruction::StoreRegistersToMemory { upto_register_id } => {
+                // TODO: some versions of chip8 incremented index register in loop, make this optional behaviour.
+                for (i, register_id) in (0..=upto_register_id).enumerate() {
+                    self.memory[usize::from(self.index_register) + i] =
+                        self.variable_registers[usize::from(register_id)];
+                }
+            }
+            Instruction::LoadRegistersFromMemory { upto_register_id } => {
+                // TODO: some versions of chip8 incremented index register in loop, make this optional behaviour.
+                for (i, register_id) in (0..=upto_register_id).enumerate() {
+                    self.variable_registers[usize::from(register_id)] =
+                        self.memory[usize::from(self.index_register) + i];
+                }
+            }
+            Instruction::CallSubroutine { subroutine_address } => {
+                // Save the PC to the stack for us to retrieve it when returning
+                // after the subroutine call completes.
+                self.stack.push(self.pc);
+                self.pc = subroutine_address;
+            }
+            Instruction::ReturnFromSubroutine => {
+                let return_address = self
+                    .stack
+                    .pop()
+                    .expect("stack should contain return address (PC) on return, but was empty");
+                self.pc = return_address;
+            }
+            Instruction::SkipInstructionIfValueEqual { value_a, value_b } => {
+                if value_a == value_b {
+                    self.pc += 2;
+                }
+            }
+            Instruction::SkipInstructionIfValuesNotEqual { value_a, value_b } => {
+                if value_a != value_b {
+                    self.pc += 2;
+                }
             }
         }
     }
@@ -570,7 +672,11 @@ impl Sprite {
     }
 }
 
-const FONTSET: [u8; 16 * 5] = [
+const BYTES_PER_FONT_CHAR: u8 = 5;
+
+/// Each char from 0x0 to 0xF is represented by a bitmap made up of 5 bytes,
+/// where the top 4 bits of each byte represent one row of the char.
+const FONTSET: [u8; 16 * (BYTES_PER_FONT_CHAR as usize)] = [
     0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
     0x20, 0x60, 0x20, 0x20, 0x70, // 1
     0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
@@ -589,7 +695,13 @@ const FONTSET: [u8; 16 * 5] = [
     0xF0, 0x80, 0xF0, 0x80, 0x80, // F
 ];
 
+/// The address in memory where the fontset is loaded.
 const FONT_ADDR: Address = 0x050;
+
+/// Get address of a font character in memory.
+fn get_font_addr(font_char: u8) -> Address {
+    FONT_ADDR + u16::from(font_char) * u16::from(BYTES_PER_FONT_CHAR)
+}
 
 // CHIP-8 programs expect to be loaded at address 0x200 (512) due historical
 // reasons (the first interpreters were located in RAM from 0x000 to 0x1FF).
