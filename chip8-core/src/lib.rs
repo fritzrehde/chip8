@@ -59,7 +59,6 @@ impl Cpu {
         let mut s = Self {
             state: CpuState::Executing,
             pc: 0x000,
-            // TODO: maybe start with 16 byte capacity, which is standard usage.
             stack: Vec::new(),
             memory: [0x0; 4096],
             framebuffer: Default::default(),
@@ -228,11 +227,11 @@ enum Instruction {
     },
     ShiftLeft {
         x_register_id: u8,
-        y_register_id: u8,
+        _y_register_id: u8,
     },
     ShiftRight {
         x_register_id: u8,
-        y_register_id: u8,
+        _y_register_id: u8,
     },
     JumpWithOffset {
         address: Address,
@@ -362,11 +361,11 @@ impl Cpu {
             },
             (0x8, _, _, 0x6) => Instruction::ShiftRight {
                 x_register_id: x,
-                y_register_id: y,
+                _y_register_id: y,
             },
             (0x8, _, _, 0xE) => Instruction::ShiftLeft {
                 x_register_id: x,
-                y_register_id: y,
+                _y_register_id: y,
             },
             (0xB, _, _, _) => Instruction::JumpWithOffset {
                 address: nnn,
@@ -497,27 +496,27 @@ impl Cpu {
             }
             Instruction::ShiftRight {
                 x_register_id,
-                y_register_id,
+                _y_register_id: _,
             } => {
-                let vx = self.variable_registers[usize::from(x_register_id)];
-                let vy = self.variable_registers[usize::from(y_register_id)];
-
-                let shifted_out_bit = vx & 0b0000_0001;
                 // TODO: setting vx to vy was removed by later CHIP impls, so make user-customisable.
-                self.variable_registers[usize::from(x_register_id)] = vy;
+                // let vy = self.variable_registers[usize::from(y_register_id)];
+                // self.variable_registers[usize::from(x_register_id)] = vy;
+
+                let shifted_out_bit =
+                    self.variable_registers[usize::from(x_register_id)] & 0b0000_0001;
                 self.variable_registers[usize::from(x_register_id)] >>= 1;
                 self.variable_registers[0xF] = shifted_out_bit;
             }
             Instruction::ShiftLeft {
                 x_register_id,
-                y_register_id,
+                _y_register_id: _,
             } => {
-                let vx = self.variable_registers[usize::from(x_register_id)];
-                let vy = self.variable_registers[usize::from(y_register_id)];
-
-                let shifted_out_bit = (vx & 0b1000_0000) >> 7;
                 // TODO: setting vx to vy was removed by later CHIP impls, so make user-customisable.
-                self.variable_registers[usize::from(x_register_id)] = vy;
+                // let vy = self.variable_registers[usize::from(y_register_id)];
+                // self.variable_registers[usize::from(x_register_id)] = vy;
+
+                let shifted_out_bit =
+                    (self.variable_registers[usize::from(x_register_id)] & 0b1000_0000) >> 7;
                 self.variable_registers[usize::from(x_register_id)] <<= 1;
                 self.variable_registers[0xF] = shifted_out_bit;
             }
