@@ -1,4 +1,6 @@
-use std::path::Path;
+use std::{ops::Shl, path::Path};
+
+use rand::{Rng, rngs::ThreadRng};
 
 // 12-bit pointer addressing memory.
 type Address = u16;
@@ -37,6 +39,8 @@ pub struct Cpu {
     /// every tick (e.g. at 60 Hz tick-rate), and should "beep" audibly while
     /// above 0. Also known as "ST".
     sound_timer: Timer,
+
+    rng: ThreadRng,
 }
 
 // TOOD: think about wrapping adds
@@ -54,6 +58,7 @@ impl Cpu {
             variable_registers: [0x0; 16],
             delay_timer: Timer::new(),
             sound_timer: Timer::new(),
+            rng: rand::rng(),
         };
         s.load_fontset();
         s
@@ -88,6 +93,122 @@ impl Cpu {
         }
     }
 
+    fn draw_sprite(&mut self, sprite: Sprite) {
+        let mut any_pixel_turned_off = false;
+
+        for (i, (left_col_x, y)) in
+            steps_in_dir(sprite.top_left_x, sprite.top_left_y, Direction::South)
+                .take(usize::from(sprite.height))
+                .enumerate()
+        {
+            let sprite_row = self.memory[usize::from(sprite.bits_ptr) + i];
+            for (pixel_idx, _x, bit) in
+                bits_msb_to_lsb(sprite_row)
+                    .enumerate()
+                    .filter_map(|(offset_from_left_col, bit)| {
+                        let x = left_col_x
+                            + u8::try_from(offset_from_left_col)
+                                .expect("a byte contains exactly 8 bits");
+                        get_pixel_idx(x, y).map(|pixel_idx| (pixel_idx, x, bit))
+                    })
+            {
+                let prev_pixel = self.framebuffer[pixel_idx];
+                let new_pixel = match bit {
+                    Bit::One => prev_pixel.flipped(),
+                    Bit::Zero => prev_pixel,
+                };
+                self.framebuffer[pixel_idx] = new_pixel;
+
+                if prev_pixel == Pixel::Filled && new_pixel == Pixel::Empty {
+                    any_pixel_turned_off = true;
+                }
+            }
+        }
+
+        self.variable_registers[0xF] = if any_pixel_turned_off { 0x1 } else { 0x0 };
+    }
+
+    pub fn framebuffer(&self) -> &Framebuffer {
+        &self.framebuffer
+    }
+}
+
+enum Instruction {
+    ClearScreen,
+    JumpTo {
+        address: Address,
+    },
+    SetVariableRegisterToValue {
+        register_id: u8,
+        value: u8,
+    },
+    AddValueToVariableRegister {
+        register_id: u8,
+        value: u8,
+    },
+    SetIndexRegister {
+        value: Address,
+    },
+    AddValueToIndexRegister {
+        value: Address,
+    },
+    Draw(Sprite),
+    SetVxToVy {
+        x_register_id: u8,
+        y_register_id: u8,
+    },
+    BinaryOrVxVy {
+        x_register_id: u8,
+        y_register_id: u8,
+    },
+    BinaryAndVxVy {
+        x_register_id: u8,
+        y_register_id: u8,
+    },
+    LogicalXorVxVy {
+        x_register_id: u8,
+        y_register_id: u8,
+    },
+    AddVyToVx {
+        x_register_id: u8,
+        y_register_id: u8,
+    },
+    SubtractVyfromVx {
+        x_register_id: u8,
+        y_register_id: u8,
+    },
+    SubtractVxfromVy {
+        x_register_id: u8,
+        y_register_id: u8,
+    },
+    ShiftLeft {
+        x_register_id: u8,
+        y_register_id: u8,
+    },
+    ShiftRight {
+        x_register_id: u8,
+        y_register_id: u8,
+    },
+    JumpWithOffset {
+        address: Address,
+        offset: u16,
+    },
+    Random {
+        dst_register_id: u8,
+        bin_and_with_value: u8,
+    },
+    SetVxToDelayTimer {
+        x_register_id: u8,
+    },
+    SetDelayTimerToVx {
+        x_register_id: u8,
+    },
+    SetSoundTimerToVx {
+        x_register_id: u8,
+    },
+}
+
+impl Cpu {
     fn fetch_next_inst(&self) -> Instruction {
         // Read the instruction that PC is currently pointing at from memory.
         let (opcode_high_nibble, opcode_low_nibble) = (
@@ -138,6 +259,40 @@ impl Cpu {
                 x_register_id: x,
                 y_register_id: y,
             },
+            (0x8, _, _, 0x4) => Instruction::AddVyToVx {
+                x_register_id: x,
+                y_register_id: y,
+            },
+            (0x8, _, _, 0x5) => Instruction::SubtractVyfromVx {
+                x_register_id: x,
+                y_register_id: y,
+            },
+            (0x8, _, _, 0x7) => Instruction::SubtractVxfromVy {
+                x_register_id: x,
+                y_register_id: y,
+            },
+            (0x8, _, _, 0x6) => Instruction::ShiftRight {
+                x_register_id: x,
+                y_register_id: y,
+            },
+            (0x8, _, _, 0xE) => Instruction::ShiftLeft {
+                x_register_id: x,
+                y_register_id: y,
+            },
+            (0xB, _, _, _) => Instruction::JumpWithOffset {
+                address: nnn,
+                offset: u16::from(self.variable_registers[0x0]),
+            },
+            (0xC, _, _, _) => Instruction::Random {
+                dst_register_id: x,
+                bin_and_with_value: nn,
+            },
+            (0xF, _, 0x0, 0x7) => Instruction::SetVxToDelayTimer { x_register_id: x },
+            (0xF, _, 0x1, 0x5) => Instruction::SetDelayTimerToVx { x_register_id: x },
+            (0xF, _, 0x1, 0x8) => Instruction::SetSoundTimerToVx { x_register_id: x },
+            (0xF, _, 0x1, 0xE) => Instruction::AddValueToIndexRegister {
+                value: u16::from(vx),
+            },
             _ => todo!(),
         }
     }
@@ -182,46 +337,92 @@ impl Cpu {
                 self.variable_registers[usize::from(x_register_id)] ^=
                     self.variable_registers[usize::from(y_register_id)]
             }
-        }
-    }
+            Instruction::AddVyToVx {
+                x_register_id,
+                y_register_id,
+            } => {
+                let vx = self.variable_registers[usize::from(x_register_id)];
+                let vy = self.variable_registers[usize::from(y_register_id)];
 
-    fn draw_sprite(&mut self, sprite: Sprite) {
-        let mut any_pixel_turned_off = false;
+                let (sum, overflowed) = vx.overflowing_add(vy);
+                self.variable_registers[usize::from(x_register_id)] = sum;
+                self.variable_registers[0xF] = if overflowed { 0x1 } else { 0x0 };
+            }
+            Instruction::SubtractVyfromVx {
+                x_register_id,
+                y_register_id,
+            } => {
+                let vx = self.variable_registers[usize::from(x_register_id)];
+                let vy = self.variable_registers[usize::from(y_register_id)];
 
-        for (i, (left_col_x, y)) in
-            steps_in_dir(sprite.top_left_x, sprite.top_left_y, Direction::South)
-                .take(usize::from(sprite.height))
-                .enumerate()
-        {
-            let sprite_row = self.memory[usize::from(sprite.bits_ptr) + i];
-            for (pixel_idx, _x, bit) in
-                bits_msb_to_lsb(sprite_row)
-                    .enumerate()
-                    .filter_map(|(offset_from_left_col, bit)| {
-                        let x = left_col_x
-                            + u8::try_from(offset_from_left_col)
-                                .expect("a byte contains exactly 8 bits");
-                        get_pixel_idx(x, y).map(|pixel_idx| (pixel_idx, x, bit))
-                    })
-            {
-                let prev_pixel = self.framebuffer[pixel_idx];
-                let new_pixel = match bit {
-                    Bit::One => prev_pixel.flipped(),
-                    Bit::Zero => prev_pixel,
-                };
-                self.framebuffer[pixel_idx] = new_pixel;
+                let (diff, underflowed) = vx.overflowing_sub(vy);
+                self.variable_registers[usize::from(x_register_id)] = diff;
+                self.variable_registers[0xF] = if underflowed { 0x0 } else { 0x1 };
+            }
+            Instruction::SubtractVxfromVy {
+                x_register_id,
+                y_register_id,
+            } => {
+                let vx = self.variable_registers[usize::from(x_register_id)];
+                let vy = self.variable_registers[usize::from(y_register_id)];
 
-                if prev_pixel == Pixel::Filled && new_pixel == Pixel::Empty {
-                    any_pixel_turned_off = true;
-                }
+                let (diff, underflowed) = vy.overflowing_sub(vx);
+                self.variable_registers[usize::from(x_register_id)] = diff;
+                self.variable_registers[0xF] = if underflowed { 0x0 } else { 0x1 };
+            }
+            Instruction::ShiftRight {
+                x_register_id,
+                y_register_id,
+            } => {
+                let vx = self.variable_registers[usize::from(x_register_id)];
+                let vy = self.variable_registers[usize::from(y_register_id)];
+
+                let shifted_out_bit = vx & 0b0000_0001;
+                // TODO: setting vx to vy was removed by later CHIP impls, so make user-customisable.
+                self.variable_registers[usize::from(x_register_id)] = vy;
+                self.variable_registers[usize::from(x_register_id)] >>= 1;
+                self.variable_registers[0xF] = shifted_out_bit;
+            }
+            Instruction::ShiftLeft {
+                x_register_id,
+                y_register_id,
+            } => {
+                let vx = self.variable_registers[usize::from(x_register_id)];
+                let vy = self.variable_registers[usize::from(y_register_id)];
+
+                let shifted_out_bit = (vx & 0b1000_0000) >> 7;
+                // TODO: setting vx to vy was removed by later CHIP impls, so make user-customisable.
+                self.variable_registers[usize::from(x_register_id)] = vy;
+                self.variable_registers[usize::from(x_register_id)] <<= 1;
+                self.variable_registers[0xF] = shifted_out_bit;
+            }
+            Instruction::JumpWithOffset { address, offset } => {
+                // TODO: handle overflow?
+                self.pc = address + offset;
+            }
+            Instruction::Random {
+                dst_register_id,
+                bin_and_with_value,
+            } => {
+                let randon_num: u8 = self.rng.random();
+                self.variable_registers[usize::from(dst_register_id)] =
+                    randon_num & bin_and_with_value;
+            }
+            Instruction::SetVxToDelayTimer { x_register_id } => {
+                self.variable_registers[usize::from(x_register_id)] = self.delay_timer.value();
+            }
+            Instruction::SetDelayTimerToVx { x_register_id } => {
+                let vx = self.variable_registers[usize::from(x_register_id)];
+                self.delay_timer.set_value(vx);
+            }
+            Instruction::SetSoundTimerToVx { x_register_id } => {
+                let vx = self.variable_registers[usize::from(x_register_id)];
+                self.sound_timer.set_value(vx);
+            }
+            Instruction::AddValueToIndexRegister { value } => {
+                self.index_register += value;
             }
         }
-
-        self.variable_registers[0xF] = if any_pixel_turned_off { 0x1 } else { 0x0 };
-    }
-
-    pub fn framebuffer(&self) -> &Framebuffer {
-        &self.framebuffer
     }
 }
 
@@ -344,41 +545,6 @@ fn steps_in_dir(x_start: u8, y_start: u8, dir: Direction) -> impl Iterator<Item 
     })
 }
 
-enum Instruction {
-    ClearScreen,
-    JumpTo {
-        address: Address,
-    },
-    SetVariableRegisterToValue {
-        register_id: u8,
-        value: u8,
-    },
-    AddValueToVariableRegister {
-        register_id: u8,
-        value: u8,
-    },
-    SetIndexRegister {
-        value: Address,
-    },
-    Draw(Sprite),
-    SetVxToVy {
-        x_register_id: u8,
-        y_register_id: u8,
-    },
-    BinaryOrVxVy {
-        x_register_id: u8,
-        y_register_id: u8,
-    },
-    BinaryAndVxVy {
-        x_register_id: u8,
-        y_register_id: u8,
-    },
-    LogicalXorVxVy {
-        x_register_id: u8,
-        y_register_id: u8,
-    },
-}
-
 /// A sprite is a square bitmap image, made up of pixels.
 #[derive(Debug)]
 struct Sprite {
@@ -470,6 +636,14 @@ struct Timer {
 impl Timer {
     fn new() -> Self {
         Self { time: 0 }
+    }
+
+    fn value(&self) -> u8 {
+        self.time
+    }
+
+    fn set_value(&mut self, value: u8) {
+        self.time = value;
     }
 }
 
