@@ -9,6 +9,8 @@ pub const FRAME_WIDTH: u8 = 64;
 pub const FRAME_HEIGHT: u8 = 32;
 
 pub struct Cpu {
+    state: CpuState,
+
     /// Program counter, points to current instruction in memory.
     pc: Address,
 
@@ -37,15 +39,25 @@ pub struct Cpu {
     /// above 0. Also known as "ST".
     sound_timer: Timer,
 
+    /// The states of keys 0x0 to 0xF.
+    key_states: [KeyState; 16],
+
     /// Random number generator.
     rng: ThreadRng,
 }
 
-// TOOD: think about wrapping adds
+#[derive(Debug, Copy, Clone)]
+pub enum CpuState {
+    Executing,
+    WaitingForInput {
+        pending_instruction: WaitForInputKeyPress,
+    },
+}
 
 impl Cpu {
     pub fn new() -> Self {
         let mut s = Self {
+            state: CpuState::Executing,
             pc: 0x000,
             // TODO: maybe start with 16 byte capacity, which is standard usage.
             stack: Vec::new(),
@@ -55,6 +67,7 @@ impl Cpu {
             variable_registers: [0x0; 16],
             delay_timer: Timer::new(),
             sound_timer: Timer::new(),
+            key_states: [KeyState::Released; 16],
             rng: rand::rng(),
         };
         s.load_fontset();
@@ -127,6 +140,41 @@ impl Cpu {
 
     pub fn framebuffer(&self) -> &Framebuffer {
         &self.framebuffer
+    }
+
+    pub fn state(&self) -> &CpuState {
+        &self.state
+    }
+}
+
+pub enum CpuStateChange {
+    WaitingToExecuting,
+    NoChange,
+}
+
+impl Cpu {
+    /// Update a key to a new state.
+    pub fn update_key_state(&mut self, key: Key, new_key_state: KeyState) -> CpuStateChange {
+        self.key_states[key.idx()] = new_key_state;
+        let (new_state, state_change) = match self.state {
+            CpuState::Executing => (CpuState::Executing, CpuStateChange::NoChange),
+            CpuState::WaitingForInput {
+                pending_instruction,
+            } => match new_key_state {
+                KeyState::Pressed => {
+                    pending_instruction.complete(&mut self.variable_registers, key);
+                    (CpuState::Executing, CpuStateChange::WaitingToExecuting)
+                }
+                KeyState::Released => (
+                    CpuState::WaitingForInput {
+                        pending_instruction,
+                    },
+                    CpuStateChange::NoChange,
+                ),
+            },
+        };
+        self.state = new_state;
+        state_change
     }
 }
 
@@ -227,6 +275,26 @@ enum Instruction {
         value_a: u8,
         value_b: u8,
     },
+    WaitForInputKeyPress(WaitForInputKeyPress),
+    SkipInstructionIfKeyPressed {
+        key: Key,
+    },
+    SkipInstructionIfKeyNotPressed {
+        key: Key,
+    },
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct WaitForInputKeyPress {
+    /// Once any key is pressed, save the pressed key in this register.
+    next_pressed_key_dst_register_id: u8,
+}
+
+impl WaitForInputKeyPress {
+    fn complete(&self, variable_registers: &mut [u8; 16], key: Key) {
+        // Complete the instruction that caused the wait.
+        variable_registers[usize::from(self.next_pressed_key_dst_register_id)] = *key;
+    }
 }
 
 impl Cpu {
@@ -344,6 +412,11 @@ impl Cpu {
                 value_a: vx,
                 value_b: vy,
             },
+            (0xF, _, 0x0, 0xA) => Instruction::WaitForInputKeyPress(WaitForInputKeyPress {
+                next_pressed_key_dst_register_id: x,
+            }),
+            (0xE, _, 0x9, 0xE) => Instruction::SkipInstructionIfKeyPressed { key: Key::new(vx) },
+            (0xE, _, 0xA, 0x1) => Instruction::SkipInstructionIfKeyNotPressed { key: Key::new(vx) },
             _ => todo!(),
         }
     }
@@ -524,6 +597,20 @@ impl Cpu {
                     self.pc += 2;
                 }
             }
+            Instruction::WaitForInputKeyPress(wait_for_input_key_press) => {
+                self.state = CpuState::WaitingForInput {
+                    pending_instruction: wait_for_input_key_press,
+                };
+            }
+            Instruction::SkipInstructionIfKeyPressed { key } => match self.key_states[key.idx()] {
+                KeyState::Pressed => self.pc += 2,
+                KeyState::Released => {}
+            },
+            Instruction::SkipInstructionIfKeyNotPressed { key } => match self.key_states[key.idx()]
+            {
+                KeyState::Pressed => {}
+                KeyState::Released => self.pc += 2,
+            },
         }
     }
 }
@@ -773,5 +860,33 @@ impl Timer {
         } else {
             TimerTickResult::Inactive
         }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum KeyState {
+    Pressed,
+    Released,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct Key(u8);
+
+impl Key {
+    pub fn new(key_value: u8) -> Self {
+        assert!(key_value <= 0xF);
+        Self(key_value)
+    }
+
+    fn idx(&self) -> usize {
+        usize::from(self.0)
+    }
+}
+
+impl std::ops::Deref for Key {
+    type Target = u8;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }

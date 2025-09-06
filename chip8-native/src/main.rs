@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use chip8_core::{Cpu, FRAME_HEIGHT, FRAME_WIDTH, Pixel, Rom};
+use chip8_core::{Cpu, CpuState, FRAME_HEIGHT, FRAME_WIDTH, Pixel, Rom};
 use clap::Parser;
 use nonzero_ext::nonzero;
 
@@ -41,9 +41,9 @@ struct App {
     /// at startup for desktop apps (mobile apps can be suspended and resumed arbitrarily,
     /// but we only support desktop usage).
     graphics: Option<Graphics>,
-    /// Deadline for the next tick.
+    /// Deadline for the next CPU tick.
     next_tick: Instant,
-    /// Deadline for the next instruction execution.
+    /// Deadline for executing the next instruction.
     next_inst: Instant,
     /// Deadline for requesting the next frame to be drawn.
     next_frame: Instant,
@@ -77,19 +77,24 @@ impl App {
         }
     }
 
-    fn tick_or_step_or_frame(&mut self) {
+    fn tick(&mut self) {
         let now = Instant::now();
-
         while now >= self.next_tick {
             self.cpu.tick();
             self.next_tick += self.time_between_ticks;
         }
+    }
 
+    fn step(&mut self) {
+        let now = Instant::now();
         while now >= self.next_inst {
             self.cpu.step();
             self.next_inst += self.time_between_insts;
         }
+    }
 
+    fn frame(&mut self) {
+        let now = Instant::now();
         let mut request_redraw = false;
         while now >= self.next_frame {
             request_redraw = true;
@@ -105,10 +110,6 @@ impl App {
             return;
         };
         graphics.window().request_redraw();
-    }
-
-    fn next_deadline(&self) -> Instant {
-        min!(self.next_tick, self.next_inst, self.next_frame)
     }
 
     // TODO: should only be called if sth in frame has changed since last draw, for improved perf
@@ -127,6 +128,33 @@ impl App {
     }
 }
 
+// While the cpu is blocked waiting for input, no instructions
+// need to be be executed, which means the frame will also not
+// be updated. Cpu must continue to tick at all times, though.
+impl App {
+    fn tick_and_step_and_frame(&mut self) {
+        match self.cpu.state() {
+            CpuState::Executing => {
+                self.tick();
+                self.step();
+                self.frame();
+            }
+            CpuState::WaitingForInput { .. } => {
+                self.tick();
+            }
+        }
+    }
+
+    fn next_deadline(&self) -> Instant {
+        match self.cpu.state() {
+            CpuState::Executing => min!(self.next_tick, self.next_inst, self.next_frame),
+            CpuState::WaitingForInput { .. } => {
+                min!(self.next_tick)
+            }
+        }
+    }
+}
+
 impl winit::application::ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         self.graphics = Some(Graphics::new(event_loop));
@@ -142,7 +170,7 @@ impl winit::application::ApplicationHandler for App {
                 start: _,
                 requested_resume: _,
             } => {
-                self.tick_or_step_or_frame();
+                self.tick_and_step_and_frame();
                 event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
                     self.next_deadline(),
                 ));
@@ -174,14 +202,67 @@ impl winit::application::ApplicationHandler for App {
         }
         match event {
             winit::event::WindowEvent::RedrawRequested => self.draw(),
-            // winit::event::WindowEvent::KeyboardInput {
-            //     device_id,
-            //     event,
-            //     is_synthetic,
-            // } => todo!(),
+            winit::event::WindowEvent::KeyboardInput {
+                device_id: _,
+                event,
+                is_synthetic: _,
+            } => {
+                let winit::keyboard::PhysicalKey::Code(key_code) = event.physical_key else {
+                    return;
+                };
+                let Some(key) = key_map(key_code) else {
+                    return;
+                };
+                let key_state = key_state_map(event.state);
+                match self.cpu.update_key_state(key, key_state) {
+                    chip8_core::CpuStateChange::WaitingToExecuting => {
+                        // Remove all instruction- and frame-"debt" collected
+                        // during wait, to avoid catch-up.
+                        let now = Instant::now();
+                        self.next_inst = now + self.time_between_insts;
+                        self.next_frame = now + self.time_between_frames;
+                    }
+                    chip8_core::CpuStateChange::NoChange => {}
+                };
+            }
             winit::event::WindowEvent::CloseRequested => event_loop.exit(),
             _ => {}
         };
+    }
+}
+
+fn key_map(winit_keycode: winit::keyboard::KeyCode) -> Option<chip8_core::Key> {
+    // PC:        CHIP-8:
+    // 1 2 3 4    1 2 3 C
+    // Q W E R -> 4 5 6 D
+    // A S D F    7 8 9 E
+    // Z X C V    A 0 B F
+
+    match winit_keycode {
+        winit::keyboard::KeyCode::Digit1 => Some(chip8_core::Key::new(0x1)),
+        winit::keyboard::KeyCode::Digit2 => Some(chip8_core::Key::new(0x2)),
+        winit::keyboard::KeyCode::Digit3 => Some(chip8_core::Key::new(0x3)),
+        winit::keyboard::KeyCode::Digit4 => Some(chip8_core::Key::new(0xC)),
+        winit::keyboard::KeyCode::KeyQ => Some(chip8_core::Key::new(0x4)),
+        winit::keyboard::KeyCode::KeyW => Some(chip8_core::Key::new(0x5)),
+        winit::keyboard::KeyCode::KeyE => Some(chip8_core::Key::new(0x6)),
+        winit::keyboard::KeyCode::KeyR => Some(chip8_core::Key::new(0xD)),
+        winit::keyboard::KeyCode::KeyA => Some(chip8_core::Key::new(0x7)),
+        winit::keyboard::KeyCode::KeyS => Some(chip8_core::Key::new(0x8)),
+        winit::keyboard::KeyCode::KeyD => Some(chip8_core::Key::new(0x9)),
+        winit::keyboard::KeyCode::KeyF => Some(chip8_core::Key::new(0xE)),
+        winit::keyboard::KeyCode::KeyZ => Some(chip8_core::Key::new(0xA)),
+        winit::keyboard::KeyCode::KeyX => Some(chip8_core::Key::new(0x0)),
+        winit::keyboard::KeyCode::KeyC => Some(chip8_core::Key::new(0xB)),
+        winit::keyboard::KeyCode::KeyV => Some(chip8_core::Key::new(0xF)),
+        _ => None,
+    }
+}
+
+fn key_state_map(winit_key_state: winit::event::ElementState) -> chip8_core::KeyState {
+    match winit_key_state {
+        winit::event::ElementState::Pressed => chip8_core::KeyState::Pressed,
+        winit::event::ElementState::Released => chip8_core::KeyState::Released,
     }
 }
 
