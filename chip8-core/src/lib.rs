@@ -113,12 +113,12 @@ impl Cpu {
                         get_pixel_idx(x, y).map(|pixel_idx| (pixel_idx, x, bit))
                     })
             {
-                let prev_pixel = self.framebuffer[pixel_idx];
+                let prev_pixel = *self.framebuffer.get_pixel(pixel_idx);
                 let new_pixel = match bit {
                     Bit::One => prev_pixel.flipped(),
                     Bit::Zero => prev_pixel,
                 };
-                self.framebuffer[pixel_idx] = new_pixel;
+                self.framebuffer.set_pixel(pixel_idx, new_pixel);
 
                 if prev_pixel == Pixel::Filled && new_pixel == Pixel::Empty {
                     any_pixel_turned_off = true;
@@ -131,6 +131,10 @@ impl Cpu {
 
     pub fn framebuffer(&self) -> &Framebuffer {
         &self.framebuffer
+    }
+
+    pub fn mut_framebuffer(&mut self) -> &mut Framebuffer {
+        &mut self.framebuffer
     }
 
     pub fn state(&self) -> &CpuState {
@@ -634,14 +638,21 @@ impl Rom {
     }
 }
 
+pub enum DrawStatus {
+    NeedsRedraw,
+    Flushed,
+}
+
 pub struct Framebuffer {
     pixels: [Pixel; (FRAME_WIDTH as usize) * (FRAME_HEIGHT as usize)],
+    draw_status: DrawStatus,
 }
 
 impl Default for Framebuffer {
     fn default() -> Self {
         Self {
             pixels: [Pixel::Empty; (FRAME_WIDTH as usize) * (FRAME_HEIGHT as usize)],
+            draw_status: DrawStatus::Flushed,
         }
     }
 }
@@ -649,6 +660,28 @@ impl Default for Framebuffer {
 impl Framebuffer {
     fn fill(&mut self, pixel: Pixel) {
         self.pixels.fill(pixel);
+        // If the framebuffer already contained only these pixels, a redraw is
+        // unnecessary, but checking for that would probably not be much more
+        // efficient than just redrawing.
+        self.draw_status = DrawStatus::NeedsRedraw;
+    }
+
+    fn get_pixel(&mut self, pixel_idx: usize) -> &Pixel {
+        &self.pixels[pixel_idx]
+    }
+
+    fn set_pixel(&mut self, pixel_idx: usize, pixel: Pixel) {
+        self.pixels[pixel_idx] = pixel;
+        self.draw_status = DrawStatus::NeedsRedraw;
+    }
+
+    pub fn draw_status(&self) -> &DrawStatus {
+        &self.draw_status
+    }
+
+    /// Should be called if the framebuffer has been drawn/flushed to the graphics layer.
+    pub fn flush(&mut self) {
+        self.draw_status = DrawStatus::Flushed;
     }
 }
 
@@ -668,24 +701,12 @@ impl std::fmt::Debug for Framebuffer {
     }
 }
 
-impl std::ops::Index<usize> for Framebuffer {
-    type Output = Pixel;
+impl<'a> IntoIterator for &'a Framebuffer {
+    type Item = &'a Pixel;
+    type IntoIter = std::slice::Iter<'a, Pixel>;
 
-    fn index(&self, idx: usize) -> &Self::Output {
-        &self.pixels[idx]
-    }
-}
-
-impl std::ops::IndexMut<usize> for Framebuffer {
-    fn index_mut(&mut self, idx: usize) -> &mut Self::Output {
-        &mut self.pixels[idx]
-    }
-}
-
-impl std::ops::Deref for Framebuffer {
-    type Target = [Pixel];
-    fn deref(&self) -> &Self::Target {
-        &self.pixels
+    fn into_iter(self) -> Self::IntoIter {
+        self.pixels.iter()
     }
 }
 

@@ -40,7 +40,7 @@ struct App {
     /// Window to display frame; only exists once "resumed" by OS, which only happens
     /// at startup for desktop apps (mobile apps can be suspended and resumed arbitrarily,
     /// but we only support desktop usage).
-    graphics: Option<Graphics>,
+    display: Option<Display>,
     /// Deadline for the next CPU tick.
     next_tick: Instant,
     /// Deadline for executing the next instruction.
@@ -67,7 +67,7 @@ impl App {
         Self {
             cpu,
             render: [0x0; (FRAME_WIDTH as usize) * (FRAME_HEIGHT as usize)],
-            graphics: None,
+            display: None,
             next_tick: now + time_between_ticks,
             next_inst: now + time_between_insts,
             next_frame: now + time_between_frames,
@@ -100,36 +100,43 @@ impl App {
 
     fn frame(&mut self) {
         let now = Instant::now();
-        let mut request_redraw = false;
+        let mut time_for_redraw = false;
         while now >= self.next_frame {
-            request_redraw = true;
+            time_for_redraw = true;
             self.next_frame += self.time_between_frames;
         }
-        if request_redraw {
-            self.request_window_redraw();
+        if time_for_redraw {
+            // Optimisation: only redraw if framebuffer has been mutated since last draw.
+            match self.cpu.framebuffer().draw_status() {
+                chip8_core::DrawStatus::NeedsRedraw => {
+                    self.request_window_redraw();
+                }
+                chip8_core::DrawStatus::Flushed => {}
+            };
         }
     }
 
     fn request_window_redraw(&self) {
-        let Some(graphics) = &self.graphics else {
+        let Some(display) = &self.display else {
             return;
         };
-        graphics.window().request_redraw();
+        display.window().request_redraw();
     }
 
-    // TODO: should only be called if sth in frame has changed since last draw, for improved perf
     fn draw(&mut self) {
-        let Some(graphics) = &mut self.graphics else {
+        let Some(display) = &mut self.display else {
             return;
         };
-        // TODO: converting Pixels to u32 hex codes on every render is inefficient, think about maintaining duplicate u32 hex state alongside Pixel array
-        for (rendered_pixel, pixel) in zip(self.render.iter_mut(), self.cpu.framebuffer().iter()) {
+        // TODO: converting Pixels to u32 hex codes on every render is inefficient, think about maintaining duplicate u32 hex state alongside Pixel array, so we only pay when updating framebuffer (rare)
+        let framebuffer = self.cpu.mut_framebuffer();
+        for (rendered_pixel, pixel) in zip(self.render.iter_mut(), &*framebuffer) {
             *rendered_pixel = match pixel {
                 Pixel::Filled => self.colour_palette.foreground_colour,
                 Pixel::Empty => self.colour_palette.background_colour,
             };
         }
-        graphics.render(&self.render);
+        display.render(&self.render);
+        framebuffer.flush();
     }
 }
 
@@ -162,7 +169,7 @@ impl App {
 
 impl winit::application::ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        self.graphics = Some(Graphics::new(event_loop));
+        self.display = Some(Display::new(event_loop));
     }
 
     fn new_events(
@@ -199,10 +206,10 @@ impl winit::application::ApplicationHandler for App {
         window_id: winit::window::WindowId,
         event: winit::event::WindowEvent,
     ) {
-        let Some(graphics) = &mut self.graphics else {
+        let Some(display) = &mut self.display else {
             return;
         };
-        if graphics.window().id() != window_id {
+        if display.window().id() != window_id {
             return;
         }
         match event {
@@ -271,12 +278,11 @@ fn key_state_map(winit_key_state: winit::event::ElementState) -> chip8_core::Key
     }
 }
 
-// TODO: choose better name
-struct Graphics {
+struct Display {
     surface: softbuffer::Surface<winit::event_loop::OwnedDisplayHandle, winit::window::Window>,
 }
 
-impl Graphics {
+impl Display {
     fn new(event_loop: &winit::event_loop::ActiveEventLoop) -> Self {
         let window = event_loop
             .create_window(winit::window::Window::default_attributes())
@@ -322,6 +328,7 @@ impl Default for ColourPalette {
 
 struct BeepSound {
     sink: rodio::Sink,
+    // Needs to be kept alive, since stream is destroyed when this object is dropped.
     _stream: rodio::OutputStream,
 }
 
