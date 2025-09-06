@@ -51,6 +51,7 @@ struct App {
     time_between_insts: Duration,
     time_between_frames: Duration,
     colour_palette: ColourPalette,
+    beep_sound: BeepSound,
 }
 
 impl App {
@@ -74,13 +75,17 @@ impl App {
             time_between_insts,
             time_between_frames,
             colour_palette: Default::default(),
+            beep_sound: BeepSound::new(),
         }
     }
 
     fn tick(&mut self) {
         let now = Instant::now();
         while now >= self.next_tick {
-            self.cpu.tick();
+            match self.cpu.tick() {
+                chip8_core::ActionOnTick::PlayBeepSound => self.beep_sound.on(),
+                chip8_core::ActionOnTick::PauseBeepSound => self.beep_sound.off(),
+            }
             self.next_tick += self.time_between_ticks;
         }
     }
@@ -312,5 +317,35 @@ impl Default for ColourPalette {
             background_colour: BLACK_RGB,
             foreground_colour: WHITE_RGB,
         }
+    }
+}
+
+struct BeepSound {
+    sink: rodio::Sink,
+    _stream: rodio::OutputStream,
+}
+
+impl BeepSound {
+    fn new() -> Self {
+        let stream = rodio::OutputStreamBuilder::open_default_stream().unwrap();
+        let sink = rodio::Sink::connect_new(stream.mixer());
+        let wave = rodio::source::SineWave::new(440.0);
+        sink.append(wave);
+
+        sink.set_volume(0.1);
+        sink.pause();
+
+        Self {
+            sink,
+            _stream: stream,
+        }
+    }
+
+    fn on(&self) {
+        self.sink.play();
+    }
+
+    fn off(&self) {
+        self.sink.pause();
     }
 }

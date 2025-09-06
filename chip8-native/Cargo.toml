@@ -9,5 +9,6 @@ chip8-core = { path = "../chip8-core" }
 clap = { version = "4.5.47", features = ["derive"] }
 env_logger = "0.11.8"
 nonzero_ext = "0.3.0"
+rodio = "0.21.1"
 softbuffer = "0.4.6"
 winit = "0.30.12"

@@ -94,14 +94,6 @@ impl Cpu {
         self.exec_inst(inst);
     }
 
-    /// A callback that will be called at the tick rate.
-    pub fn tick(&mut self) {
-        self.delay_timer.tick();
-        if self.sound_timer.tick() == TimerTickResult::Ticked {
-            // TODO: play sound
-        }
-    }
-
     fn draw_sprite(&mut self, sprite: Sprite) {
         let mut any_pixel_turned_off = false;
 
@@ -143,6 +135,22 @@ impl Cpu {
 
     pub fn state(&self) -> &CpuState {
         &self.state
+    }
+}
+
+pub enum ActionOnTick {
+    PlayBeepSound,
+    PauseBeepSound,
+}
+
+impl Cpu {
+    /// A callback that will be called at the tick rate.
+    pub fn tick(&mut self) -> ActionOnTick {
+        self.delay_timer.tick();
+        match self.sound_timer.tick() {
+            TimerTickResult::Ticked => ActionOnTick::PlayBeepSound,
+            TimerTickResult::Inactive => ActionOnTick::PauseBeepSound,
+        }
     }
 }
 
@@ -549,7 +557,7 @@ impl Cpu {
                 self.index_register = get_font_addr(font_char);
             }
             Instruction::SaveNumberAsDecimalDigits { number } => {
-                // Number is between 0 and 255
+                // Number is between 0 and 255.
                 // Dividing by 10 in decimal is equivalent to shifting one to the right in binary.
                 // Modulo 10 in decimal is equivalent to masking out lowest digit.
                 let digit1 = number / 100;
