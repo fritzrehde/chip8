@@ -28,7 +28,7 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-// Fixed, required by CHIP-8.
+// Fixed tick rate, required by CHIP-8.
 const TICKS_PER_SEC: f64 = 60.0;
 // TODO: make user-customizable
 const INSTS_PER_SEC: f64 = 700.0;
@@ -165,11 +165,23 @@ impl App {
             }
         }
     }
+
+    fn schedule_next_timer_event(&self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        // Due to some unfortunate timings of OS scheduling, the deadline might be
+        // in the past, but this is fine, as winit's eventloop will still execute
+        // events scheduled for deadlines in the past.
+        let deadline = self.next_deadline();
+        event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(deadline));
+    }
 }
 
 impl winit::application::ApplicationHandler for App {
+    // On desktop, only called once at startup.
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         self.display = Some(Display::new(event_loop));
+
+        // Schedule the first task event, which then "piggy-back" off of each other.
+        self.schedule_next_timer_event(event_loop);
     }
 
     fn new_events(
@@ -183,18 +195,15 @@ impl winit::application::ApplicationHandler for App {
                 requested_resume: _,
             } => {
                 self.tick_and_step_and_frame();
-                event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
-                    self.next_deadline(),
-                ));
+                self.schedule_next_timer_event(event_loop);
             }
             winit::event::StartCause::WaitCancelled {
                 start: _,
                 requested_resume: _,
             } => {
-                // Re-request the cancelled wait request.
-                event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
-                    self.next_deadline(),
-                ));
+                // We should just re-request the cancelled wait request, but we only
+                // really care about our timer events, so just schedule that again directly.
+                self.schedule_next_timer_event(event_loop);
             }
             _ => {}
         }
@@ -354,5 +363,63 @@ impl BeepSound {
 
     fn off(&self) {
         self.sink.pause();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(all(target_os = "linux"))]
+    #[test]
+    fn wait_until_past_deadline_wakes_immediately() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+        use winit::application::ApplicationHandler;
+        use winit::event::StartCause;
+        use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+        use winit::platform::wayland::EventLoopBuilderExtWayland;
+
+        struct TestApp {
+            tx: mpsc::SyncSender<StartCause>,
+        }
+
+        impl ApplicationHandler for TestApp {
+            fn new_events(&mut self, el: &ActiveEventLoop, cause: StartCause) {
+                match cause {
+                    StartCause::Init => {
+                        // Schedule a deadline that is in the past.
+                        el.set_control_flow(ControlFlow::WaitUntil(
+                            Instant::now() - Duration::from_secs(1),
+                        ));
+                    }
+                    // We expect this immediately after Init because the deadline is past.
+                    StartCause::ResumeTimeReached { .. } => {
+                        self.tx.send(cause).unwrap();
+                        el.exit();
+                    }
+                    _ => {}
+                }
+            }
+
+            fn resumed(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {}
+
+            fn window_event(
+                &mut self,
+                _event_loop: &winit::event_loop::ActiveEventLoop,
+                _window_id: winit::window::WindowId,
+                _event: winit::event::WindowEvent,
+            ) {
+            }
+        }
+
+        let (tx, rx) = mpsc::sync_channel(1);
+        let mut app = TestApp { tx };
+        let event_loop = EventLoop::builder().with_any_thread(true).build().unwrap();
+        event_loop.run_app(&mut app).unwrap();
+
+        let cause = rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("no msg received");
+
+        assert!(matches!(cause, StartCause::ResumeTimeReached { .. }),);
     }
 }
