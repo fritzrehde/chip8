@@ -482,7 +482,9 @@ struct BeepSound {
 
 impl BeepSound {
     fn new() -> Self {
-        let stream = rodio::OutputStreamBuilder::open_default_stream().unwrap();
+        let mut stream = rodio::OutputStreamBuilder::open_default_stream().unwrap();
+        stream.log_on_drop(false);
+
         let sink = rodio::Sink::connect_new(stream.mixer());
         let wave = rodio::source::SineWave::new(440.0);
         sink.append(wave);
