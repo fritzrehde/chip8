@@ -13,28 +13,36 @@ use self_cell::self_cell;
 use utils::min_opt;
 use winit::window::Window;
 
+// Fixed tick rate, required by CHIP-8.
+const TICKS_PER_SEC: f64 = 60.0;
+// TODO: make user-customizable
+const INSTS_PER_SEC: f64 = 700.0;
+const FRAMES_PER_SEC: f64 = 60.0;
+
+const DEFAULT_BACKGROUND_COLOUR: Colour = BLACK;
+const DEFAULT_FOREGROUND_COLOUR: Colour = WHITE;
+
 #[derive(Debug, Parser)]
 struct Cli {
+    #[arg(short = 'r', long = "rom", value_name = "PATH", required = true)]
     rom_file_path: PathBuf,
+
+    #[command(flatten)]
+    colour_palette: ColourPaletteArgs,
 }
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let rom = Rom::read_from_file(cli.rom_file_path)?;
     let cpu = Cpu::new();
-    let mut app = App::new(cpu, &rom);
+    let colour_palette = ColourPalette::from(cli.colour_palette);
+    let mut app = App::new(cpu, &rom, colour_palette);
 
     let event_loop = winit::event_loop::EventLoop::new()?;
     event_loop.run_app(&mut app)?;
 
     Ok(())
 }
-
-// Fixed tick rate, required by CHIP-8.
-const TICKS_PER_SEC: f64 = 60.0;
-// TODO: make user-customizable
-const INSTS_PER_SEC: f64 = 700.0;
-const FRAMES_PER_SEC: f64 = 60.0;
 
 struct App {
     cpu: Cpu,
@@ -57,7 +65,7 @@ struct App {
 }
 
 impl App {
-    fn new(mut cpu: Cpu, rom: &Rom) -> Self {
+    fn new(mut cpu: Cpu, rom: &Rom, colour_palette: ColourPalette) -> Self {
         cpu.load_rom(rom);
 
         let time_between_ticks = Duration::from_secs_f64(1.0 / TICKS_PER_SEC);
@@ -68,7 +76,8 @@ impl App {
 
         Self {
             cpu,
-            render: [BLACK_RGB; (FRAME_WIDTH as usize) * (FRAME_HEIGHT as usize)],
+            render: [colour_palette.background_colour;
+                (FRAME_WIDTH as usize) * (FRAME_HEIGHT as usize)],
             display: None,
             next_tick: now + time_between_ticks,
             next_inst: Some(now + time_between_insts),
@@ -76,7 +85,7 @@ impl App {
             time_between_ticks,
             time_between_insts,
             time_between_frames,
-            colour_palette: Default::default(),
+            colour_palette,
             beep_sound: BeepSound::new(),
         }
     }
@@ -335,7 +344,7 @@ impl Display {
         self.with_dependent_mut(|_window, pixels| {
             let frame = pixels.frame_mut();
             for (dst, pixel_colour) in zip(frame.chunks_exact_mut(4), rendered_pixel_colours) {
-                dst.copy_from_slice(pixel_colour.as_rgba());
+                dst.copy_from_slice(&pixel_colour.as_rgba());
             }
             pixels.render().unwrap();
         });
@@ -344,43 +353,95 @@ impl Display {
 
 #[derive(Debug, Copy, Clone)]
 struct Colour {
-    rgba: [u8; 4], // [R, G, B, A]
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8,
 }
 
 impl Colour {
-    fn as_rgba(&self) -> &[u8; 4] {
-        &self.rgba
+    fn as_rgba(&self) -> [u8; 4] {
+        [self.r, self.g, self.b, self.a]
     }
 }
 
-impl From<Colour> for pixels::wgpu::Color {
-    fn from(my_colour: Colour) -> Self {
-        pixels::wgpu::Color {
-            r: f64::from(my_colour.rgba[0]),
-            g: f64::from(my_colour.rgba[1]),
-            b: f64::from(my_colour.rgba[2]),
-            a: f64::from(my_colour.rgba[3]),
+impl std::str::FromStr for Colour {
+    type Err = hex_color::ParseHexColorError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let hex_color = hex_color::HexColor::parse(s)?;
+        let colour = Colour::from(hex_color);
+        Ok(colour)
+    }
+}
+
+impl From<hex_color::HexColor> for Colour {
+    fn from(hex_color: hex_color::HexColor) -> Self {
+        Self {
+            r: hex_color.r,
+            g: hex_color.g,
+            b: hex_color.b,
+            a: hex_color.a,
         }
     }
 }
 
+impl From<Colour> for pixels::wgpu::Color {
+    fn from(c: Colour) -> Self {
+        let srgba = palette::Srgba::new(c.r, c.g, c.b, c.a);
+        let linear = srgba.into_linear();
+        pixels::wgpu::Color {
+            r: linear.red,
+            g: linear.green,
+            b: linear.blue,
+            a: linear.alpha,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 struct ColourPalette {
     foreground_colour: Colour,
     background_colour: Colour,
 }
 
-const BLACK_RGB: Colour = Colour {
-    rgba: [0x00, 0x00, 0x00, 0xFF],
+const BLACK: Colour = Colour {
+    r: 0x00,
+    g: 0x00,
+    b: 0x00,
+    a: 0xFF,
 };
-const WHITE_RGB: Colour = Colour {
-    rgba: [0xFF, 0xFF, 0xFF, 0xFF],
+const WHITE: Colour = Colour {
+    r: 0xFF,
+    g: 0xFF,
+    b: 0xFF,
+    a: 0xFF,
 };
 
 impl Default for ColourPalette {
     fn default() -> Self {
         Self {
-            background_colour: BLACK_RGB,
-            foreground_colour: WHITE_RGB,
+            background_colour: DEFAULT_BACKGROUND_COLOUR,
+            foreground_colour: DEFAULT_FOREGROUND_COLOUR,
+        }
+    }
+}
+
+#[derive(Debug, Parser)]
+struct ColourPaletteArgs {
+    #[arg(long = "background-colour", value_name = "COLOR")]
+    background_colour: Option<Colour>,
+
+    #[arg(long = "foreground-colour", value_name = "COLOR")]
+    foreground_colour: Option<Colour>,
+}
+
+impl From<ColourPaletteArgs> for ColourPalette {
+    fn from(opt: ColourPaletteArgs) -> Self {
+        let default = ColourPalette::default();
+        Self {
+            background_colour: opt.background_colour.unwrap_or(default.background_colour),
+            foreground_colour: opt.foreground_colour.unwrap_or(default.foreground_colour),
         }
     }
 }
