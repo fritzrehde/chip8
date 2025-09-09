@@ -4,3 +4,4 @@ resolver = "2"
 
 [workspace.dependencies]
 log = "0.4.28"
+derive-new = "0.7.0"

@@ -2,6 +2,12 @@
 
 I loosely followed this guide: https://tobiasvl.github.io/blog/write-a-chip-8-emulator/.
 
+## Features
+
+- Customisable foreground and background colours.
+- Customisable rates for instructions executed per second and frames rendered per second (see section on design decisions below for how this was made possible), e.g. for speedrunning.
+
+
 ## Design decisions I am proud of
 
 ### Decoupling tick rate, instruction rate and frame rate

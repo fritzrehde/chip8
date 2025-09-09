@@ -8,41 +8,61 @@ use std::{
 
 use chip8_core::{Cpu, CpuState, FRAME_HEIGHT, FRAME_WIDTH, Pixel, Rom};
 use clap::Parser;
+use derive_new::new;
 use pixels::Pixels;
 use self_cell::self_cell;
 use utils::min_opt;
 use winit::window::Window;
 
-// Fixed tick rate, required by CHIP-8.
-const TICKS_PER_SEC: f64 = 60.0;
-// TODO: make user-customizable
-const INSTS_PER_SEC: f64 = 700.0;
-const FRAMES_PER_SEC: f64 = 60.0;
-
+const DEFAULT_INSTRUCTIONS_PER_SEC: f64 = 700.0;
+const DEFAULT_FRAMES_PER_SEC: f64 = 60.0;
 const DEFAULT_BACKGROUND_COLOUR: Colour = BLACK;
 const DEFAULT_FOREGROUND_COLOUR: Colour = WHITE;
 
 #[derive(Debug, Parser)]
 struct Cli {
+    /// Path to the ROM file to be played.
     #[arg(short = 'r', long = "rom", value_name = "PATH", required = true)]
     rom_file_path: PathBuf,
 
-    #[command(flatten)]
-    colour_palette: ColourPaletteArgs,
+    /// Background colour.
+    #[arg(long = "background-colour", value_name = "COLOR", default_value_t = DEFAULT_BACKGROUND_COLOUR)]
+    background_colour: Colour,
+
+    /// Foreground colour.
+    #[arg(long = "foreground-colour", value_name = "COLOR", default_value_t = DEFAULT_FOREGROUND_COLOUR)]
+    foreground_colour: Colour,
+
+    /// Instructions per second.
+    #[arg(long = "insts-per-sec", value_name = "f64", default_value_t = DEFAULT_INSTRUCTIONS_PER_SEC)]
+    instructions_per_sec: f64,
+
+    /// Frames per second.
+    #[arg(long = "frames-per-sec", value_name = "f64", default_value_t = DEFAULT_FRAMES_PER_SEC)]
+    frames_per_sec: f64,
 }
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let rom = Rom::read_from_file(cli.rom_file_path)?;
     let cpu = Cpu::new();
-    let colour_palette = ColourPalette::from(cli.colour_palette);
-    let mut app = App::new(cpu, &rom, colour_palette);
+    let colour_palette = ColourPalette::new(cli.foreground_colour, cli.background_colour);
+    let mut app = App::new(
+        cpu,
+        &rom,
+        colour_palette,
+        cli.instructions_per_sec,
+        cli.frames_per_sec,
+    );
 
     let event_loop = winit::event_loop::EventLoop::new()?;
     event_loop.run_app(&mut app)?;
 
     Ok(())
 }
+
+// Fixed tick rate, required by CHIP-8.
+const TICKS_PER_SEC: f64 = 60.0;
 
 struct App {
     cpu: Cpu,
@@ -65,12 +85,18 @@ struct App {
 }
 
 impl App {
-    fn new(mut cpu: Cpu, rom: &Rom, colour_palette: ColourPalette) -> Self {
+    fn new(
+        mut cpu: Cpu,
+        rom: &Rom,
+        colour_palette: ColourPalette,
+        instructions_per_sec: f64,
+        frames_per_sec: f64,
+    ) -> Self {
         cpu.load_rom(rom);
 
         let time_between_ticks = Duration::from_secs_f64(1.0 / TICKS_PER_SEC);
-        let time_between_insts = Duration::from_secs_f64(1.0 / INSTS_PER_SEC);
-        let time_between_frames = Duration::from_secs_f64(1.0 / FRAMES_PER_SEC);
+        let time_between_insts = Duration::from_secs_f64(1.0 / instructions_per_sec);
+        let time_between_frames = Duration::from_secs_f64(1.0 / frames_per_sec);
 
         let now = Instant::now();
 
@@ -365,6 +391,14 @@ impl Colour {
     }
 }
 
+impl std::fmt::Display for Colour {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let hex_color = hex_color::HexColor::from(self);
+        write!(f, "{}", hex_color.display_rgba())?;
+        Ok(())
+    }
+}
+
 impl std::str::FromStr for Colour {
     type Err = hex_color::ParseHexColorError;
 
@@ -386,6 +420,17 @@ impl From<hex_color::HexColor> for Colour {
     }
 }
 
+impl From<&Colour> for hex_color::HexColor {
+    fn from(c: &Colour) -> Self {
+        hex_color::HexColor {
+            r: c.r,
+            g: c.g,
+            b: c.b,
+            a: c.a,
+        }
+    }
+}
+
 impl From<Colour> for pixels::wgpu::Color {
     fn from(c: Colour) -> Self {
         let srgba = palette::Srgba::new(c.r, c.g, c.b, c.a);
@@ -399,7 +444,7 @@ impl From<Colour> for pixels::wgpu::Color {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, new)]
 struct ColourPalette {
     foreground_colour: Colour,
     background_colour: Colour,
@@ -417,34 +462,6 @@ const WHITE: Colour = Colour {
     b: 0xFF,
     a: 0xFF,
 };
-
-impl Default for ColourPalette {
-    fn default() -> Self {
-        Self {
-            background_colour: DEFAULT_BACKGROUND_COLOUR,
-            foreground_colour: DEFAULT_FOREGROUND_COLOUR,
-        }
-    }
-}
-
-#[derive(Debug, Parser)]
-struct ColourPaletteArgs {
-    #[arg(long = "background-colour", value_name = "COLOR")]
-    background_colour: Option<Colour>,
-
-    #[arg(long = "foreground-colour", value_name = "COLOR")]
-    foreground_colour: Option<Colour>,
-}
-
-impl From<ColourPaletteArgs> for ColourPalette {
-    fn from(opt: ColourPaletteArgs) -> Self {
-        let default = ColourPalette::default();
-        Self {
-            background_colour: opt.background_colour.unwrap_or(default.background_colour),
-            foreground_colour: opt.foreground_colour.unwrap_or(default.foreground_colour),
-        }
-    }
-}
 
 struct BeepSound {
     sink: rodio::Sink,

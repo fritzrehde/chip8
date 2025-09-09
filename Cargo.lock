@@ -366,6 +366,7 @@ dependencies = [
  "anyhow",
  "chip8-core",
  "clap",
+ "derive-new",
  "env_logger",
  "hex_color",
  "palette",
