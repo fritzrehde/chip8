@@ -16,6 +16,7 @@ use winit::window::Window;
 
 const DEFAULT_INSTRUCTIONS_PER_SEC: f64 = 700.0;
 const DEFAULT_FRAMES_PER_SEC: f64 = 60.0;
+const DEFAULT_LETTERBOX_COLOUR: Colour = BLACK;
 const DEFAULT_BACKGROUND_COLOUR: Colour = BLACK;
 const DEFAULT_FOREGROUND_COLOUR: Colour = WHITE;
 
@@ -25,13 +26,17 @@ struct Cli {
     #[arg(short = 'r', long = "rom", value_name = "PATH", required = true)]
     rom_file_path: PathBuf,
 
-    /// Background colour.
+    /// Colour used in background of the game.
     #[arg(long = "background-colour", value_name = "COLOR", default_value_t = DEFAULT_BACKGROUND_COLOUR)]
     background_colour: Colour,
 
-    /// Foreground colour.
+    /// Colour used in foreground of the game.
     #[arg(long = "foreground-colour", value_name = "COLOR", default_value_t = DEFAULT_FOREGROUND_COLOUR)]
     foreground_colour: Colour,
+
+    /// Colour used in window space outside of game (letterboxing).
+    #[arg(long = "letterbox-colour", value_name = "COLOR", default_value_t = DEFAULT_LETTERBOX_COLOUR)]
+    letterbox_colour: Colour,
 
     /// Instructions per second.
     #[arg(long = "insts-per-sec", value_name = "f64", default_value_t = DEFAULT_INSTRUCTIONS_PER_SEC)]
@@ -46,7 +51,11 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let rom = Rom::read_from_file(cli.rom_file_path)?;
     let cpu = Cpu::new();
-    let colour_palette = ColourPalette::new(cli.foreground_colour, cli.background_colour);
+    let colour_palette = ColourPalette::new(
+        cli.foreground_colour,
+        cli.background_colour,
+        cli.letterbox_colour,
+    );
     let mut app = App::new(
         cpu,
         &rom,
@@ -116,6 +125,7 @@ impl App {
         }
     }
 
+    // TODO: collect statistics on whether slowdowns are ever encountered (i.e. whether we ever need to catch up on missed deadlines by entering while loop body multiple times in one call)
     fn tick(&mut self) {
         let now = Instant::now();
         while now >= self.next_tick {
@@ -350,7 +360,7 @@ impl Display {
             let surface = pixels::SurfaceTexture::new(size.width, size.height, window);
             let mut pixels =
                 Pixels::new(u32::from(FRAME_WIDTH), u32::from(FRAME_HEIGHT), surface).unwrap();
-            pixels.clear_color(pixels::wgpu::Color::from(colour_palette.background_colour));
+            pixels.clear_color(pixels::wgpu::Color::from(colour_palette.letterbox_colour));
 
             pixels
         })
@@ -448,6 +458,7 @@ impl From<Colour> for pixels::wgpu::Color {
 struct ColourPalette {
     foreground_colour: Colour,
     background_colour: Colour,
+    letterbox_colour: Colour,
 }
 
 const BLACK: Colour = Colour {
