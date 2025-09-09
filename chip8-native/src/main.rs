@@ -10,6 +10,7 @@ use std::{
 use chip8_core::{Cpu, CpuState, FRAME_HEIGHT, FRAME_WIDTH, Pixel, Rom};
 use clap::Parser;
 use nonzero_ext::nonzero;
+use utils::min_opt;
 
 #[derive(Debug, Parser)]
 struct Cli {
@@ -43,10 +44,10 @@ struct App {
     display: Option<Display>,
     /// Deadline for the next CPU tick.
     next_tick: Instant,
-    /// Deadline for executing the next instruction.
-    next_inst: Instant,
-    /// Deadline for requesting the next frame to be drawn.
-    next_frame: Instant,
+    /// Deadline for executing the next instruction. Paused if CPU is waiting for input.
+    next_inst: Option<Instant>,
+    /// Deadline for requesting the next frame to be drawn. Paused if CPU is waiting for input.
+    next_frame: Option<Instant>,
     time_between_ticks: Duration,
     time_between_insts: Duration,
     time_between_frames: Duration,
@@ -69,8 +70,8 @@ impl App {
             render: [0x0; (FRAME_WIDTH as usize) * (FRAME_HEIGHT as usize)],
             display: None,
             next_tick: now + time_between_ticks,
-            next_inst: now + time_between_insts,
-            next_frame: now + time_between_frames,
+            next_inst: Some(now + time_between_insts),
+            next_frame: Some(now + time_between_frames),
             time_between_ticks,
             time_between_insts,
             time_between_frames,
@@ -91,28 +92,44 @@ impl App {
     }
 
     fn step(&mut self) {
-        let now = Instant::now();
-        while now >= self.next_inst {
-            self.cpu.step();
-            self.next_inst += self.time_between_insts;
+        if let Some(next_inst) = &mut self.next_inst {
+            let now = Instant::now();
+            while now >= *next_inst {
+                self.cpu.step();
+                *next_inst += self.time_between_insts;
+            }
+            // The last executed instruction might have lead to a transition
+            // from executing to waiting for input state.
+            match self.cpu.state() {
+                CpuState::Executing => {}
+                CpuState::WaitingForInput { .. } => {
+                    // While the cpu is blocked waiting for input, no instructions
+                    // can be executed, which means the frame will also not
+                    // be updated. CPU must continue to tick at all times, though.
+                    self.next_inst = None;
+                    self.next_frame = None;
+                }
+            }
         }
     }
 
     fn frame(&mut self) {
-        let now = Instant::now();
-        let mut time_for_redraw = false;
-        while now >= self.next_frame {
-            time_for_redraw = true;
-            self.next_frame += self.time_between_frames;
-        }
-        if time_for_redraw {
-            // Optimisation: only redraw if framebuffer has been mutated since last draw.
-            match self.cpu.framebuffer().draw_status() {
-                chip8_core::DrawStatus::NeedsRedraw => {
-                    self.request_window_redraw();
-                }
-                chip8_core::DrawStatus::Flushed => {}
-            };
+        if let Some(next_frame) = &mut self.next_frame {
+            let now = Instant::now();
+            let mut time_for_redraw = false;
+            while now >= *next_frame {
+                time_for_redraw = true;
+                *next_frame += self.time_between_frames;
+            }
+            if time_for_redraw {
+                // Optimisation: only redraw if framebuffer has been mutated since last draw.
+                match self.cpu.framebuffer().draw_status() {
+                    chip8_core::DrawStatus::NeedsRedraw => {
+                        self.request_window_redraw();
+                    }
+                    chip8_core::DrawStatus::Flushed => {}
+                };
+            }
         }
     }
 
@@ -138,32 +155,15 @@ impl App {
         display.render(&self.render);
         framebuffer.flush();
     }
-}
 
-// While the cpu is blocked waiting for input, no instructions
-// need to be be executed, which means the frame will also not
-// be updated. Cpu must continue to tick at all times, though.
-impl App {
     fn tick_and_step_and_frame(&mut self) {
-        match self.cpu.state() {
-            CpuState::Executing => {
-                self.tick();
-                self.step();
-                self.frame();
-            }
-            CpuState::WaitingForInput { .. } => {
-                self.tick();
-            }
-        }
+        self.tick();
+        self.step();
+        self.frame();
     }
 
     fn next_deadline(&self) -> Instant {
-        match self.cpu.state() {
-            CpuState::Executing => min!(self.next_tick, self.next_inst, self.next_frame),
-            CpuState::WaitingForInput { .. } => {
-                min!(self.next_tick)
-            }
-        }
+        min_opt(self.next_inst, self.next_frame, self.next_tick)
     }
 
     fn schedule_next_timer_event(&self, event_loop: &winit::event_loop::ActiveEventLoop) {
@@ -237,11 +237,10 @@ impl winit::application::ApplicationHandler for App {
                 let key_state = key_state_map(event.state);
                 match self.cpu.update_key_state(key, key_state) {
                     chip8_core::CpuStateChange::WaitingToExecuting => {
-                        // Remove all instruction- and frame-"debt" collected
-                        // during wait, to avoid catch-up.
+                        // Unpause instruction- and frame-rates.
                         let now = Instant::now();
-                        self.next_inst = now + self.time_between_insts;
-                        self.next_frame = now + self.time_between_frames;
+                        self.next_inst = Some(now + self.time_between_insts);
+                        self.next_frame = Some(now + self.time_between_frames);
                     }
                     chip8_core::CpuStateChange::NoChange => {}
                 };
