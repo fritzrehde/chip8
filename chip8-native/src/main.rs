@@ -2,15 +2,16 @@ mod utils;
 
 use std::{
     iter::zip,
-    num::NonZeroU32,
     path::PathBuf,
     time::{Duration, Instant},
 };
 
 use chip8_core::{Cpu, CpuState, FRAME_HEIGHT, FRAME_WIDTH, Pixel, Rom};
 use clap::Parser;
-use nonzero_ext::nonzero;
+use pixels::Pixels;
+use self_cell::self_cell;
 use utils::min_opt;
+use winit::window::Window;
 
 #[derive(Debug, Parser)]
 struct Cli {
@@ -37,7 +38,7 @@ const FRAMES_PER_SEC: f64 = 60.0;
 
 struct App {
     cpu: Cpu,
-    render: [u32; (FRAME_WIDTH as usize) * (FRAME_HEIGHT as usize)],
+    render: [Colour; (FRAME_WIDTH as usize) * (FRAME_HEIGHT as usize)],
     /// Window to display frame; only exists once "resumed" by OS, which only happens
     /// at startup for desktop apps (mobile apps can be suspended and resumed arbitrarily,
     /// but we only support desktop usage).
@@ -67,7 +68,7 @@ impl App {
 
         Self {
             cpu,
-            render: [0x0; (FRAME_WIDTH as usize) * (FRAME_HEIGHT as usize)],
+            render: [BLACK_RGB; (FRAME_WIDTH as usize) * (FRAME_HEIGHT as usize)],
             display: None,
             next_tick: now + time_between_ticks,
             next_inst: Some(now + time_between_insts),
@@ -178,7 +179,7 @@ impl App {
 impl winit::application::ApplicationHandler for App {
     // On desktop, only called once at startup.
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        self.display = Some(Display::new(event_loop));
+        self.display = Some(Display::create(event_loop, &self.colour_palette));
 
         // Schedule the first task event, which then "piggy-back" off of each other.
         self.schedule_next_timer_event(event_loop);
@@ -245,6 +246,11 @@ impl winit::application::ApplicationHandler for App {
                     chip8_core::CpuStateChange::NoChange => {}
                 };
             }
+            winit::event::WindowEvent::Resized(size) => {
+                if let Some(display) = &mut self.display {
+                    display.resize(size.width, size.height);
+                }
+            }
             winit::event::WindowEvent::CloseRequested => event_loop.exit(),
             _ => {}
         };
@@ -286,44 +292,89 @@ fn key_state_map(winit_key_state: winit::event::ElementState) -> chip8_core::Key
     }
 }
 
-struct Display {
-    surface: softbuffer::Surface<winit::event_loop::OwnedDisplayHandle, winit::window::Window>,
-}
+// Pixels<'window> references Window.
+self_cell!(
+    struct Display {
+        owner: Window,
+        #[covariant]
+        dependent: Pixels,
+    }
+);
 
 impl Display {
-    fn new(event_loop: &winit::event_loop::ActiveEventLoop) -> Self {
+    fn create(
+        event_loop: &winit::event_loop::ActiveEventLoop,
+        colour_palette: &ColourPalette,
+    ) -> Self {
         let window = event_loop
             .create_window(winit::window::Window::default_attributes())
             .unwrap();
-        let context = softbuffer::Context::new(event_loop.owned_display_handle()).unwrap();
-        let mut surface = softbuffer::Surface::new(&context, window).unwrap();
-        surface
-            .resize(
-                NonZeroU32::from(nonzero!(FRAME_WIDTH)),
-                NonZeroU32::from(nonzero!(FRAME_HEIGHT)),
-            )
-            .unwrap();
-        Self { surface }
+
+        Self::new(window, |window| {
+            let size = window.inner_size();
+            let surface = pixels::SurfaceTexture::new(size.width, size.height, window);
+            let mut pixels =
+                Pixels::new(u32::from(FRAME_WIDTH), u32::from(FRAME_HEIGHT), surface).unwrap();
+            pixels.clear_color(pixels::wgpu::Color::from(colour_palette.background_colour));
+
+            pixels
+        })
     }
 
-    fn render(&mut self, render: &[u32]) {
-        let mut buf = self.surface.buffer_mut().unwrap();
-        buf.copy_from_slice(render);
-        buf.present().unwrap();
+    fn window(&self) -> &Window {
+        &self.borrow_owner()
     }
 
-    fn window(&self) -> &winit::window::Window {
-        self.surface.window()
+    fn resize(&mut self, width: u32, height: u32) {
+        self.with_dependent_mut(|_window, pixels| {
+            pixels.resize_surface(width, height).unwrap();
+        });
+    }
+
+    fn render(&mut self, rendered_pixel_colours: &[Colour]) {
+        self.with_dependent_mut(|_window, pixels| {
+            let frame = pixels.frame_mut();
+            for (dst, pixel_colour) in zip(frame.chunks_exact_mut(4), rendered_pixel_colours) {
+                dst.copy_from_slice(pixel_colour.as_rgba());
+            }
+            pixels.render().unwrap();
+        });
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+struct Colour {
+    rgba: [u8; 4], // [R, G, B, A]
+}
+
+impl Colour {
+    fn as_rgba(&self) -> &[u8; 4] {
+        &self.rgba
+    }
+}
+
+impl From<Colour> for pixels::wgpu::Color {
+    fn from(my_colour: Colour) -> Self {
+        pixels::wgpu::Color {
+            r: f64::from(my_colour.rgba[0]),
+            g: f64::from(my_colour.rgba[1]),
+            b: f64::from(my_colour.rgba[2]),
+            a: f64::from(my_colour.rgba[3]),
+        }
     }
 }
 
 struct ColourPalette {
-    foreground_colour: u32,
-    background_colour: u32,
+    foreground_colour: Colour,
+    background_colour: Colour,
 }
 
-const BLACK_RGB: u32 = 0x00_00_00;
-const WHITE_RGB: u32 = 0xFF_FF_FF;
+const BLACK_RGB: Colour = Colour {
+    rgba: [0x00, 0x00, 0x00, 0xFF],
+};
+const WHITE_RGB: Colour = Colour {
+    rgba: [0xFF, 0xFF, 0xFF, 0xFF],
+};
 
 impl Default for ColourPalette {
     fn default() -> Self {
