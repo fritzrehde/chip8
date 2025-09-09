@@ -4,8 +4,9 @@ I loosely followed this guide: https://tobiasvl.github.io/blog/write-a-chip-8-em
 
 ## Features
 
-- Customisable foreground and background colours.
-- Customisable rates for instructions executed per second and frames rendered per second (see section on design decisions below for how this was made possible), e.g. for speedrunning.
+- The number of instructions executed per second and frames rendered per second can be configured independently (see section on design decisions below on how this was made possible). This allows, for example, speeding up execution for speedrunning.
+- The game's display (fixed 64:32 aspect ratio) is scaled up to the largest size that fits inside the desktop window while preserving its aspect ratio, with unused space filled by letterboxing.
+- Customisable foreground, background and letterbox colours.
 
 
 ## Design decisions I am proud of
