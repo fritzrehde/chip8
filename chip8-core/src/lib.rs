@@ -90,13 +90,22 @@ impl Cpu {
     pub fn load_rom(&mut self, rom: &Rom) {
         rom.load_into_memory(&mut self.memory, &mut self.pc);
     }
+}
 
+#[derive(Debug, thiserror::Error)]
+pub enum ProgramError {
+    #[error("Encountered an unknown instruction opcode: {opcode}")]
+    UnknownInstruction { opcode: u16 },
+}
+
+impl Cpu {
     /// Fetch, decode and execute one instruction.
-    pub fn step(&mut self) {
-        let inst = self.fetch_next_inst();
+    pub fn step(&mut self) -> Result<(), ProgramError> {
+        let inst = self.fetch_next_inst()?;
         self.pc.increment();
         // Increment PC first to avoid skipping jumped-to instruction.
         self.exec_inst(inst);
+        Ok(())
     }
 
     pub(crate) fn draw_sprite(&mut self, sprite: Sprite) {
@@ -287,9 +296,9 @@ impl WaitForInputKeyPress {
 }
 
 impl Cpu {
-    fn fetch_next_inst(&self) -> Instruction {
+    fn fetch_next_inst(&self) -> Result<Instruction, ProgramError> {
         // Read the instruction that PC is currently pointing at from memory.
-        let (opcode_high_nibble, opcode_low_nibble) = (
+        let (opcode_high_byte, opcode_low_byte) = (
             self.memory[usize::from(*self.pc)],
             self.memory[usize::from(*self.pc + 1)],
         );
@@ -297,18 +306,17 @@ impl Cpu {
         // opcode: [ F | X | Y | N ]
         //         [ _ | _ | NN    ]
         //         [ _ | NNN       ]
-        let f = (opcode_high_nibble & 0xF0) >> 4;
-        let x = opcode_high_nibble & 0x0F;
-        let y = (opcode_low_nibble & 0xF0) >> 4;
-        let n = opcode_low_nibble & 0x0F;
-        let nn = opcode_low_nibble;
-        let nnn: Address =
-            ((u16::from(opcode_high_nibble) & 0x0F) << 8) | u16::from(opcode_low_nibble);
+        let f = (opcode_high_byte & 0xF0) >> 4;
+        let x = opcode_high_byte & 0x0F;
+        let y = (opcode_low_byte & 0xF0) >> 4;
+        let n = opcode_low_byte & 0x0F;
+        let nn = opcode_low_byte;
+        let nnn: Address = ((u16::from(opcode_high_byte) & 0x0F) << 8) | u16::from(opcode_low_byte);
 
         let vx = self.variable_registers[usize::from(x)];
         let vy = self.variable_registers[usize::from(y)];
 
-        match (f, x, y, n) {
+        let instruction = match (f, x, y, n) {
             (0x0, 0x0, 0xE, 0x0) => Instruction::ClearScreen,
             (0x1, _, _, _) => Instruction::JumpTo { address: nnn },
             (0x6, _, _, _) => Instruction::SetVariableRegisterToValue {
@@ -406,8 +414,12 @@ impl Cpu {
             }),
             (0xE, _, 0x9, 0xE) => Instruction::SkipInstructionIfKeyPressed { key: Key::new(vx) },
             (0xE, _, 0xA, 0x1) => Instruction::SkipInstructionIfKeyNotPressed { key: Key::new(vx) },
-            _ => todo!(),
-        }
+            _ => {
+                let opcode = (u16::from(opcode_high_byte) << 8) | u16::from(opcode_low_byte);
+                return Err(ProgramError::UnknownInstruction { opcode });
+            }
+        };
+        Ok(instruction)
     }
 
     fn exec_inst(&mut self, inst: Instruction) {

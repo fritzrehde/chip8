@@ -7,3 +7,4 @@ edition = "2024"
 derive-new = { workspace = true }
 log = { workspace = true }
 rand = "0.9.2"
+thiserror = "2.0.16"

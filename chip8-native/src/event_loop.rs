@@ -85,11 +85,11 @@ impl App {
         }
     }
 
-    fn step(&mut self) {
+    fn step(&mut self) -> anyhow::Result<()> {
         if let Some(next_inst) = &mut self.next_inst {
             let now = Instant::now();
             while now >= *next_inst {
-                self.cpu.step();
+                self.cpu.step()?;
                 *next_inst += self.time_between_insts;
             }
             // The last executed instruction might have lead to a transition
@@ -105,6 +105,7 @@ impl App {
                 }
             }
         }
+        Ok(())
     }
 
     fn frame(&mut self) {
@@ -150,10 +151,11 @@ impl App {
         framebuffer.flush();
     }
 
-    fn tick_and_step_and_frame(&mut self) {
+    fn tick_and_step_and_frame(&mut self) -> anyhow::Result<()> {
         self.tick();
-        self.step();
+        self.step()?;
         self.frame();
+        Ok(())
     }
 
     fn next_deadline(&self) -> Instant {
@@ -166,6 +168,32 @@ impl App {
         // events scheduled for deadlines in the past.
         let deadline = self.next_deadline();
         event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(deadline));
+    }
+
+    fn handle_fallible_new_events(
+        &mut self,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+        cause: winit::event::StartCause,
+    ) -> anyhow::Result<()> {
+        match cause {
+            winit::event::StartCause::ResumeTimeReached {
+                start: _,
+                requested_resume: _,
+            } => {
+                self.tick_and_step_and_frame()?;
+                self.schedule_next_timer_event(event_loop);
+            }
+            winit::event::StartCause::WaitCancelled {
+                start: _,
+                requested_resume: _,
+            } => {
+                // We should just re-request the cancelled wait request, but we only
+                // really care about our timer events, so just schedule that again directly.
+                self.schedule_next_timer_event(event_loop);
+            }
+            _ => {}
+        }
+        Ok(())
     }
 }
 
@@ -183,23 +211,12 @@ impl winit::application::ApplicationHandler for App {
         event_loop: &winit::event_loop::ActiveEventLoop,
         cause: winit::event::StartCause,
     ) {
-        match cause {
-            winit::event::StartCause::ResumeTimeReached {
-                start: _,
-                requested_resume: _,
-            } => {
-                self.tick_and_step_and_frame();
-                self.schedule_next_timer_event(event_loop);
+        match self.handle_fallible_new_events(event_loop, cause) {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("fatal error: {e}");
+                event_loop.exit();
             }
-            winit::event::StartCause::WaitCancelled {
-                start: _,
-                requested_resume: _,
-            } => {
-                // We should just re-request the cancelled wait request, but we only
-                // really care about our timer events, so just schedule that again directly.
-                self.schedule_next_timer_event(event_loop);
-            }
-            _ => {}
         }
     }
 
