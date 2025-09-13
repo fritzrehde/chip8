@@ -1,11 +1,11 @@
-pub struct BeepSound {
+pub(crate) struct BeepSound {
     sink: rodio::Sink,
     // Needs to be kept alive, since stream is destroyed when this object is dropped.
     _stream: rodio::OutputStream,
 }
 
 impl BeepSound {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let mut stream = rodio::OutputStreamBuilder::open_default_stream().unwrap();
         stream.log_on_drop(false);
 
@@ -22,11 +22,11 @@ impl BeepSound {
         }
     }
 
-    pub fn on(&self) {
+    pub(crate) fn on(&self) {
         self.sink.play();
     }
 
-    pub fn off(&self) {
+    pub(crate) fn off(&self) {
         self.sink.pause();
     }
 }

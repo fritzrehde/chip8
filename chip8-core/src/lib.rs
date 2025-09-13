@@ -1,6 +1,18 @@
-use std::path::Path;
+mod font;
+mod framebuffer;
+mod key;
+mod memory;
+mod rom;
+mod timer;
 
+use framebuffer::{DrawSpriteResult, Framebuffer, Sprite};
+use memory::{Memory, ProgramCounter};
 use rand::{Rng, rngs::ThreadRng};
+use timer::{Timer, TimerTickResult};
+
+pub use framebuffer::{DrawStatus, Pixel};
+pub use key::{Key, KeyState};
+pub use rom::Rom;
 
 // 12-bit pointer addressing memory.
 type Address = u16;
@@ -13,14 +25,14 @@ pub struct Cpu {
     state: CpuState,
 
     /// Program counter, points to current instruction in memory.
-    pc: Address,
+    pc: ProgramCounter,
 
     /// Growable stack of 12-bit values.
     stack: Vec<u16>,
 
     /// 4 KiB (4096 bytes) of RAM, addressable by 12 bits (2^12 = 4096),
     /// all of it writable.
-    memory: [u8; 4096],
+    memory: Memory,
 
     /// The pixels that are displayed on the screen.
     framebuffer: Framebuffer,
@@ -57,11 +69,14 @@ pub enum CpuState {
 
 impl Cpu {
     pub fn new() -> Self {
-        let mut s = Self {
+        let mut memory: Memory = Default::default();
+        font::load_fontset_into_memory(&mut memory);
+
+        Self {
             state: CpuState::Executing,
-            pc: 0x000,
+            pc: Default::default(),
             stack: Vec::new(),
-            memory: [0x0; 4096],
+            memory,
             framebuffer: Default::default(),
             index_register: 0x000,
             variable_registers: [0x0; 16],
@@ -69,65 +84,27 @@ impl Cpu {
             sound_timer: Timer::new(),
             key_states: [KeyState::Released; 16],
             rng: rand::rng(),
-        };
-        s.load_fontset();
-        s
-    }
-
-    fn load_fontset(&mut self) {
-        // Load fontset.
-        self.memory[usize::from(FONT_ADDR)..(usize::from(FONT_ADDR) + FONTSET.len())]
-            .copy_from_slice(&FONTSET);
+        }
     }
 
     pub fn load_rom(&mut self, rom: &Rom) {
-        self.memory[usize::from(PROGRAM_ADDR)..(usize::from(PROGRAM_ADDR) + rom.bytes.len())]
-            .copy_from_slice(&rom.bytes);
-        self.pc = PROGRAM_ADDR;
+        rom.load_into_memory(&mut self.memory, &mut self.pc);
     }
 
     /// Fetch, decode and execute one instruction.
     pub fn step(&mut self) {
         let inst = self.fetch_next_inst();
-        // PC indexes into byte array, and each instruction is 2 bytes wide.
-        self.pc += 2;
+        self.pc.increment();
         // Increment PC first to avoid skipping jumped-to instruction.
         self.exec_inst(inst);
     }
 
-    fn draw_sprite(&mut self, sprite: Sprite) {
-        let mut any_pixel_turned_off = false;
-
-        for (i, (left_col_x, y)) in
-            steps_in_dir(sprite.top_left_x, sprite.top_left_y, Direction::South)
-                .take(usize::from(sprite.height))
-                .enumerate()
-        {
-            let sprite_row = self.memory[usize::from(sprite.bits_ptr) + i];
-            for (pixel_idx, _x, bit) in
-                bits_msb_to_lsb(sprite_row)
-                    .enumerate()
-                    .filter_map(|(offset_from_left_col, bit)| {
-                        let x = left_col_x
-                            + u8::try_from(offset_from_left_col)
-                                .expect("a byte contains exactly 8 bits");
-                        get_pixel_idx(x, y).map(|pixel_idx| (pixel_idx, x, bit))
-                    })
-            {
-                let prev_pixel = *self.framebuffer.get_pixel(pixel_idx);
-                let new_pixel = match bit {
-                    Bit::One => prev_pixel.flipped(),
-                    Bit::Zero => prev_pixel,
-                };
-                self.framebuffer.set_pixel(pixel_idx, new_pixel);
-
-                if prev_pixel == Pixel::Filled && new_pixel == Pixel::Empty {
-                    any_pixel_turned_off = true;
-                }
-            }
-        }
-
-        self.variable_registers[0xF] = if any_pixel_turned_off { 0x1 } else { 0x0 };
+    pub(crate) fn draw_sprite(&mut self, sprite: Sprite) {
+        let sprite_rows = sprite.read_rows_from_memory(&self.memory);
+        self.variable_registers[0xF] = match self.framebuffer.draw_sprite(sprite, sprite_rows) {
+            DrawSpriteResult::AnyPixelTurnedOff => 0x1,
+            DrawSpriteResult::NoPixelTurnedOff => 0x0,
+        };
     }
 
     pub fn framebuffer(&self) -> &Framebuffer {
@@ -313,8 +290,8 @@ impl Cpu {
     fn fetch_next_inst(&self) -> Instruction {
         // Read the instruction that PC is currently pointing at from memory.
         let (opcode_high_nibble, opcode_low_nibble) = (
-            self.memory[usize::from(self.pc)],
-            self.memory[usize::from(self.pc + 1)],
+            self.memory[usize::from(*self.pc)],
+            self.memory[usize::from(*self.pc + 1)],
         );
 
         // opcode: [ F | X | Y | N ]
@@ -435,8 +412,8 @@ impl Cpu {
 
     fn exec_inst(&mut self, inst: Instruction) {
         match inst {
-            Instruction::ClearScreen => self.framebuffer.fill(Pixel::Empty),
-            Instruction::JumpTo { address } => self.pc = address,
+            Instruction::ClearScreen => self.framebuffer.clear(),
+            Instruction::JumpTo { address } => self.pc.jump_to_address(address),
             Instruction::SetVariableRegisterToValue { register_id, value } => {
                 self.variable_registers[usize::from(register_id)] = value;
             }
@@ -534,7 +511,7 @@ impl Cpu {
                 self.variable_registers[0xF] = shifted_out_bit;
             }
             Instruction::JumpWithOffset { address, offset } => {
-                self.pc = address.wrapping_add(offset)
+                self.pc.jump_to_address(address.wrapping_add(offset));
             }
             Instruction::Random {
                 dst_register_id,
@@ -559,7 +536,7 @@ impl Cpu {
                 self.index_register = self.index_register.wrapping_add(value);
             }
             Instruction::SetIndexRegisterToFontAddress { font_char } => {
-                self.index_register = get_font_addr(font_char);
+                self.index_register = font::get_font_addr(font_char);
             }
             Instruction::SaveNumberAsDecimalDigits { number } => {
                 // Number is between 0 and 255.
@@ -589,24 +566,24 @@ impl Cpu {
             Instruction::CallSubroutine { subroutine_address } => {
                 // Save the PC to the stack for us to retrieve it when returning
                 // after the subroutine call completes.
-                self.stack.push(self.pc);
-                self.pc = subroutine_address;
+                self.stack.push(*self.pc);
+                self.pc.jump_to_address(subroutine_address);
             }
             Instruction::ReturnFromSubroutine => {
                 let return_address = self
                     .stack
                     .pop()
                     .expect("stack should contain return address (PC) on return, but was empty");
-                self.pc = return_address;
+                self.pc.jump_to_address(return_address);
             }
             Instruction::SkipInstructionIfValueEqual { value_a, value_b } => {
                 if value_a == value_b {
-                    self.pc += 2;
+                    self.pc.increment();
                 }
             }
             Instruction::SkipInstructionIfValuesNotEqual { value_a, value_b } => {
                 if value_a != value_b {
-                    self.pc += 2;
+                    self.pc.increment();
                 }
             }
             Instruction::WaitForInputKeyPress(wait_for_input_key_press) => {
@@ -615,307 +592,14 @@ impl Cpu {
                 };
             }
             Instruction::SkipInstructionIfKeyPressed { key } => match self.key_states[key.idx()] {
-                KeyState::Pressed => self.pc += 2,
+                KeyState::Pressed => self.pc.increment(),
                 KeyState::Released => {}
             },
             Instruction::SkipInstructionIfKeyNotPressed { key } => match self.key_states[key.idx()]
             {
                 KeyState::Pressed => {}
-                KeyState::Released => self.pc += 2,
+                KeyState::Released => self.pc.increment(),
             },
         }
-    }
-}
-
-#[derive(Debug)]
-pub struct Rom {
-    bytes: Vec<u8>,
-}
-
-impl Rom {
-    pub fn read_from_file(rom_file_path: impl AsRef<Path>) -> std::io::Result<Self> {
-        let bytes = std::fs::read(rom_file_path)?;
-        Ok(Self { bytes })
-    }
-}
-
-pub enum DrawStatus {
-    NeedsRedraw,
-    Flushed,
-}
-
-pub struct Framebuffer {
-    pixels: [Pixel; (FRAME_WIDTH as usize) * (FRAME_HEIGHT as usize)],
-    draw_status: DrawStatus,
-}
-
-impl Default for Framebuffer {
-    fn default() -> Self {
-        Self {
-            pixels: [Pixel::Empty; (FRAME_WIDTH as usize) * (FRAME_HEIGHT as usize)],
-            draw_status: DrawStatus::Flushed,
-        }
-    }
-}
-
-impl Framebuffer {
-    fn fill(&mut self, pixel: Pixel) {
-        self.pixels.fill(pixel);
-        // If the framebuffer already contained only these pixels, a redraw is
-        // unnecessary, but checking for that would probably not be much more
-        // efficient than just redrawing.
-        self.draw_status = DrawStatus::NeedsRedraw;
-    }
-
-    fn get_pixel(&mut self, pixel_idx: usize) -> &Pixel {
-        &self.pixels[pixel_idx]
-    }
-
-    fn set_pixel(&mut self, pixel_idx: usize, pixel: Pixel) {
-        self.pixels[pixel_idx] = pixel;
-        self.draw_status = DrawStatus::NeedsRedraw;
-    }
-
-    pub fn draw_status(&self) -> &DrawStatus {
-        &self.draw_status
-    }
-
-    /// Should be called if the framebuffer has been drawn/flushed to the graphics layer.
-    pub fn flush(&mut self) {
-        self.draw_status = DrawStatus::Flushed;
-    }
-}
-
-impl std::fmt::Debug for Framebuffer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for y in 0..FRAME_HEIGHT {
-            for x in 0..FRAME_WIDTH {
-                write!(
-                    f,
-                    "{}",
-                    self.pixels[get_pixel_idx(x, y).expect("x and y are in range")]
-                )?;
-            }
-            writeln!(f)?;
-        }
-        Ok(())
-    }
-}
-
-impl<'a> IntoIterator for &'a Framebuffer {
-    type Item = &'a Pixel;
-    type IntoIter = std::slice::Iter<'a, Pixel>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.pixels.iter()
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-enum Bit {
-    Zero,
-    One,
-}
-
-fn bits_msb_to_lsb(byte: u8) -> impl Iterator<Item = Bit> {
-    (0u8..8).rev().map(move |i| match (byte & (1 << i)) >> i {
-        0 => Bit::Zero,
-        1 => Bit::One,
-        _ => unreachable!(),
-    })
-}
-
-enum Direction {
-    _North,
-    _East,
-    South,
-    _West,
-}
-
-impl Direction {
-    fn xy_diff(&self) -> (i8, i8) {
-        // Origin (0,0) is top left.
-        match self {
-            Direction::_North => (0, -1),
-            Direction::_East => (1, 0),
-            Direction::South => (0, 1),
-            Direction::_West => (-1, 0),
-        }
-    }
-}
-
-fn steps_in_dir(x_start: u8, y_start: u8, dir: Direction) -> impl Iterator<Item = (u8, u8)> {
-    let (mut x, mut y) = (i16::from(x_start), i16::from(y_start));
-    let (x_diff, y_diff) = dir.xy_diff();
-    std::iter::from_fn(move || {
-        let in_bounds =
-            (0 <= x && x < i16::from(FRAME_WIDTH)) && (0 <= y && y < i16::from(FRAME_HEIGHT));
-        if !in_bounds {
-            return None;
-        }
-        let (old_x, old_y) = (
-            u8::try_from(x).expect("in bounds is definitely u8"),
-            u8::try_from(y).expect("in bounds is definitely u8"),
-        );
-        x += i16::from(x_diff);
-        y += i16::from(y_diff);
-        Some((old_x, old_y))
-    })
-}
-
-/// A sprite is a square bitmap image, made up of pixels.
-#[derive(Debug)]
-struct Sprite {
-    /// x-coordinate of top left of the sprite.
-    top_left_x: u8,
-    /// y-coordinate of top left of the sprite.
-    top_left_y: u8,
-    /// Height of the sprite. The width of a sprite is always represented by
-    /// 1 byte, so is made up of 8 bits/pixels.
-    height: u8,
-    /// Pointer to the memory location storing the bits of the sprite in row-wise order.
-    bits_ptr: Address,
-}
-
-impl Sprite {
-    fn new(top_left_x: u8, top_left_y: u8, height: u8, bits_ptr: Address) -> Self {
-        Self {
-            top_left_x: top_left_x % FRAME_WIDTH,
-            top_left_y: top_left_y % FRAME_HEIGHT,
-            height,
-            bits_ptr,
-        }
-    }
-}
-
-const BYTES_PER_FONT_CHAR: u8 = 5;
-
-/// Each char from 0x0 to 0xF is represented by a bitmap made up of 5 bytes,
-/// where the top 4 bits of each byte represent one row of the char.
-const FONTSET: [u8; 16 * (BYTES_PER_FONT_CHAR as usize)] = [
-    0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
-    0x20, 0x60, 0x20, 0x20, 0x70, // 1
-    0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
-    0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
-    0x90, 0x90, 0xF0, 0x10, 0x10, // 4
-    0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
-    0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
-    0xF0, 0x10, 0x20, 0x40, 0x40, // 7
-    0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
-    0xF0, 0x90, 0xF0, 0x10, 0xF0, // 9
-    0xF0, 0x90, 0xF0, 0x90, 0x90, // A
-    0xE0, 0x90, 0xE0, 0x90, 0xE0, // B
-    0xF0, 0x80, 0x80, 0x80, 0xF0, // C
-    0xE0, 0x90, 0x90, 0x90, 0xE0, // D
-    0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
-    0xF0, 0x80, 0xF0, 0x80, 0x80, // F
-];
-
-/// The address in memory where the fontset is loaded.
-const FONT_ADDR: Address = 0x050;
-
-/// Get address of a font character in memory.
-fn get_font_addr(font_char: u8) -> Address {
-    FONT_ADDR + u16::from(font_char) * u16::from(BYTES_PER_FONT_CHAR)
-}
-
-// CHIP-8 programs expect to be loaded at address 0x200 (512) due historical
-// reasons (the first interpreters were located in RAM from 0x000 to 0x1FF).
-const PROGRAM_ADDR: Address = 0x200;
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub enum Pixel {
-    Filled,
-    Empty,
-}
-
-impl Pixel {
-    fn flipped(&self) -> Pixel {
-        match self {
-            Pixel::Filled => Pixel::Empty,
-            Pixel::Empty => Pixel::Filled,
-        }
-    }
-}
-
-impl std::fmt::Display for Pixel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let bit = match self {
-            Pixel::Filled => 1,
-            Pixel::Empty => 0,
-        };
-        write!(f, "{}", bit)?;
-        Ok(())
-    }
-}
-
-fn get_pixel_idx(x_coord: u8, y_coord: u8) -> Option<usize> {
-    let in_bounds = x_coord < FRAME_WIDTH && y_coord < FRAME_HEIGHT;
-    if !in_bounds {
-        return None;
-    }
-    Some((usize::from(y_coord) * usize::from(FRAME_WIDTH)) + usize::from(x_coord))
-}
-
-struct Timer {
-    time: u8,
-}
-
-impl Timer {
-    fn new() -> Self {
-        Self { time: 0 }
-    }
-
-    fn value(&self) -> u8 {
-        self.time
-    }
-
-    fn set_value(&mut self, value: u8) {
-        self.time = value;
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum TimerTickResult {
-    Ticked,
-    Inactive,
-}
-
-impl Timer {
-    fn tick(&mut self) -> TimerTickResult {
-        if self.time > 0 {
-            self.time -= 1;
-            TimerTickResult::Ticked
-        } else {
-            TimerTickResult::Inactive
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-pub enum KeyState {
-    Pressed,
-    Released,
-}
-
-#[derive(Debug, Copy, Clone)]
-pub struct Key(u8);
-
-impl Key {
-    pub fn new(key_value: u8) -> Self {
-        assert!(key_value <= 0xF);
-        Self(key_value)
-    }
-
-    fn idx(&self) -> usize {
-        usize::from(self.0)
-    }
-}
-
-impl std::ops::Deref for Key {
-    type Target = u8;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
     }
 }

@@ -1,8 +1,8 @@
 use derive_new::new;
 
-pub const DEFAULT_LETTERBOX_COLOUR: Colour = BLACK;
-pub const DEFAULT_BACKGROUND_COLOUR: Colour = BLACK;
-pub const DEFAULT_FOREGROUND_COLOUR: Colour = WHITE;
+pub(crate) const DEFAULT_LETTERBOX_COLOUR: Colour = BLACK;
+pub(crate) const DEFAULT_BACKGROUND_COLOUR: Colour = BLACK;
+pub(crate) const DEFAULT_FOREGROUND_COLOUR: Colour = WHITE;
 
 const BLACK: Colour = Colour {
     r: 0x00,
@@ -18,7 +18,7 @@ const WHITE: Colour = Colour {
 };
 
 #[derive(Debug, Copy, Clone)]
-pub struct Colour {
+pub(crate) struct Colour {
     r: u8,
     g: u8,
     b: u8,
@@ -26,7 +26,7 @@ pub struct Colour {
 }
 
 impl Colour {
-    pub fn as_rgba(&self) -> [u8; 4] {
+    pub(crate) fn as_rgba(&self) -> [u8; 4] {
         [self.r, self.g, self.b, self.a]
     }
 }
@@ -85,8 +85,8 @@ impl From<Colour> for pixels::wgpu::Color {
 }
 
 #[derive(Debug, Clone, new)]
-pub struct ColourPalette {
-    pub foreground_colour: Colour,
-    pub background_colour: Colour,
-    pub letterbox_colour: Colour,
+pub(crate) struct ColourPalette {
+    pub(crate) foreground_colour: Colour,
+    pub(crate) background_colour: Colour,
+    pub(crate) letterbox_colour: Colour,
 }

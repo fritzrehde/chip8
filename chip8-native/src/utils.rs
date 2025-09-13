@@ -10,7 +10,7 @@ macro_rules! min {
     };
 }
 
-pub fn min_opt<T: Ord>(opt_a: Option<T>, opt_b: Option<T>, c: T) -> T {
+pub(crate) fn min_opt<T: Ord>(opt_a: Option<T>, opt_b: Option<T>, c: T) -> T {
     match (opt_a, opt_b) {
         (None, None) => c,
         (None, Some(b)) => min!(b, c),

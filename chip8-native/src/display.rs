@@ -9,7 +9,7 @@ use crate::colour::{Colour, ColourPalette};
 
 // Pixels<'window> references Window.
 self_cell!(
-    pub struct Display {
+    pub(crate) struct Display {
         owner: Window,
         #[covariant]
         dependent: Pixels,
@@ -17,7 +17,7 @@ self_cell!(
 );
 
 impl Display {
-    pub fn create(
+    pub(crate) fn create(
         event_loop: &winit::event_loop::ActiveEventLoop,
         colour_palette: &ColourPalette,
     ) -> Self {
@@ -40,21 +40,21 @@ impl Display {
         self.borrow_owner()
     }
 
-    pub fn request_redraw(&self) {
+    pub(crate) fn request_redraw(&self) {
         self.window().request_redraw();
     }
 
-    pub fn window_id(&self) -> winit::window::WindowId {
+    pub(crate) fn window_id(&self) -> winit::window::WindowId {
         self.window().id()
     }
 
-    pub fn resize(&mut self, width: u32, height: u32) {
+    pub(crate) fn resize(&mut self, width: u32, height: u32) {
         self.with_dependent_mut(|_window, pixels| {
             pixels.resize_surface(width, height).unwrap();
         });
     }
 
-    pub fn render(&mut self, rendered_pixel_colours: &[Colour]) {
+    pub(crate) fn render(&mut self, rendered_pixel_colours: &[Colour]) {
         self.with_dependent_mut(|_window, pixels| {
             let frame = pixels.frame_mut();
             for (dst, pixel_colour) in zip(frame.chunks_exact_mut(4), rendered_pixel_colours) {

@@ -15,7 +15,7 @@ use crate::{
 // Fixed tick rate, required by CHIP-8.
 const TICKS_PER_SEC: f64 = 60.0;
 
-pub struct App {
+pub(crate) struct App {
     cpu: Cpu,
     render: [Colour; (FRAME_WIDTH as usize) * (FRAME_HEIGHT as usize)],
     /// Window to display frame; only exists once "resumed" by OS, which only happens
@@ -36,7 +36,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(
+    pub(crate) fn new(
         mut cpu: Cpu,
         rom: &Rom,
         colour_palette: ColourPalette,
@@ -67,7 +67,7 @@ impl App {
         }
     }
 
-    pub fn run(mut self) -> anyhow::Result<()> {
+    pub(crate) fn run(mut self) -> anyhow::Result<()> {
         let event_loop = winit::event_loop::EventLoop::new()?;
         event_loop.run_app(&mut self)?;
         Ok(())
@@ -257,25 +257,26 @@ fn key_map(winit_keycode: winit::keyboard::KeyCode) -> Option<chip8_core::Key> {
     // A S D F    7 8 9 E
     // Z X C V    A 0 B F
 
-    match winit_keycode {
-        winit::keyboard::KeyCode::Digit1 => Some(chip8_core::Key::new(0x1)),
-        winit::keyboard::KeyCode::Digit2 => Some(chip8_core::Key::new(0x2)),
-        winit::keyboard::KeyCode::Digit3 => Some(chip8_core::Key::new(0x3)),
-        winit::keyboard::KeyCode::Digit4 => Some(chip8_core::Key::new(0xC)),
-        winit::keyboard::KeyCode::KeyQ => Some(chip8_core::Key::new(0x4)),
-        winit::keyboard::KeyCode::KeyW => Some(chip8_core::Key::new(0x5)),
-        winit::keyboard::KeyCode::KeyE => Some(chip8_core::Key::new(0x6)),
-        winit::keyboard::KeyCode::KeyR => Some(chip8_core::Key::new(0xD)),
-        winit::keyboard::KeyCode::KeyA => Some(chip8_core::Key::new(0x7)),
-        winit::keyboard::KeyCode::KeyS => Some(chip8_core::Key::new(0x8)),
-        winit::keyboard::KeyCode::KeyD => Some(chip8_core::Key::new(0x9)),
-        winit::keyboard::KeyCode::KeyF => Some(chip8_core::Key::new(0xE)),
-        winit::keyboard::KeyCode::KeyZ => Some(chip8_core::Key::new(0xA)),
-        winit::keyboard::KeyCode::KeyX => Some(chip8_core::Key::new(0x0)),
-        winit::keyboard::KeyCode::KeyC => Some(chip8_core::Key::new(0xB)),
-        winit::keyboard::KeyCode::KeyV => Some(chip8_core::Key::new(0xF)),
-        _ => None,
-    }
+    let chip8_key_value = match winit_keycode {
+        winit::keyboard::KeyCode::Digit1 => 0x1,
+        winit::keyboard::KeyCode::Digit2 => 0x2,
+        winit::keyboard::KeyCode::Digit3 => 0x3,
+        winit::keyboard::KeyCode::Digit4 => 0xC,
+        winit::keyboard::KeyCode::KeyQ => 0x4,
+        winit::keyboard::KeyCode::KeyW => 0x5,
+        winit::keyboard::KeyCode::KeyE => 0x6,
+        winit::keyboard::KeyCode::KeyR => 0xD,
+        winit::keyboard::KeyCode::KeyA => 0x7,
+        winit::keyboard::KeyCode::KeyS => 0x8,
+        winit::keyboard::KeyCode::KeyD => 0x9,
+        winit::keyboard::KeyCode::KeyF => 0xE,
+        winit::keyboard::KeyCode::KeyZ => 0xA,
+        winit::keyboard::KeyCode::KeyX => 0x0,
+        winit::keyboard::KeyCode::KeyC => 0xB,
+        winit::keyboard::KeyCode::KeyV => 0xF,
+        _ => return None,
+    };
+    Some(chip8_core::Key::new(chip8_key_value))
 }
 
 fn key_state_map(winit_key_state: winit::event::ElementState) -> chip8_core::KeyState {
