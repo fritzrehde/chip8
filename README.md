@@ -1,5 +1,7 @@
 # CHIP-8 Interpreter
 
+![demo video](https://raw.githubusercontent.com/fritzrehde/i/main/chip8/demo.gif)
+
 I loosely followed this guide: https://tobiasvl.github.io/blog/write-a-chip-8-emulator/.
 
 ## Features
