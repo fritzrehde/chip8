@@ -26,7 +26,7 @@ One implementation idea I read about was to create a callback function that the 
 Since the fixed tick rate of 60 Hz is also a common frequency for the frame rate, we could just tick and draw the new frame in that callback function.
 Then, we could just execute `floor(instructions_per_second / frames_per_second)` number of instructions in each call to the callback function.
 I don't like this approach because of how coupled the tick-, instruction- and frame-rates are.
-It is recommended to set the instruction rate (instructions executed per second) to around 700, so it is significantly higher than reasonable the 60 Hz tick rate and the commonly used 60 Hz frame rate.
+It is recommended to set the instruction rate (instructions executed per second) to around 700, making it significantly higher than the fixed 60 Hz tick rate and the commonly used 60 Hz frame rate.
 However, what if we choose the rates such that the instruction rate is lower than the frame rate?
 In that case, `floor(instructions_per_second / frames_per_second)` would always evaluate to 0, so no instructions would ever be executed.
 
